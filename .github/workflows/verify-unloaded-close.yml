@@ -3,50 +3,66 @@ on:
   push:
     branches: [investigation/unloaded-close-verification]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  investigate:
+  verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      REPOSITORY: ${{ github.repository }}
+      REVISION: ${{ github.sha }}
+      BASE: b5e33a99f3e4ca206a187076db39944ab98499fd
     steps:
-      - name: Fetch pinned source and baseline test
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
+      - name: Fetch exact source and verification payload
         run: |
           mkdir -p work artifacts
-          curl --fail --silent --show-error --retry 2 "https://raw.githubusercontent.com/$REPOSITORY/b5e33a99f3e4ca206a187076db39944ab98499fd/browser/components/tabbrowser/content/tabbrowser.js" -o work/tabbrowser.js
-          curl --fail --silent --show-error --retry 2 "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/baseline.test.cjs" -o work/baseline.test.cjs
-          sha256sum work/tabbrowser.js > artifacts/source.sha256
+          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$BASE/browser/components/tabbrowser/content/tabbrowser.js" -o work/tabbrowser.js
+          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$BASE/browser/components/tabbrowser/test/browser/tabs/browser.toml" -o work/browser.toml
+          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/baseline.test.cjs" -o work/baseline.test.cjs
+          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/unloaded-close-verification-1.0.0.zip" -o work/payload.zip
+          echo '4bb82171904066903ba18ab4252924339f831ae94935582c06ebbbbe1fa4e8a2  work/payload.zip' | sha256sum --check
+          unzip -q work/payload.zip -d work
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('work/baseline.test.cjs')
+          s=p.read_text().replace("source.indexOf('    _findTabToBlurTo(aTab,')", "source.indexOf('    _findTabToBlurTo(')")
+          p.write_text(s)
+          PY
+          cp work/tabbrowser.js artifacts/tabbrowser-original.js
           node --test work/baseline.test.cjs > artifacts/baseline-tests.log 2>&1 || echo "$?" > artifacts/baseline-exit-code
-          python3 - <<'PY'
-          from pathlib import Path
-          s = Path('work/tabbrowser.js').read_text().splitlines()
-          with Path('artifacts/close-callers.txt').open('w') as out:
-              for i, line in enumerate(s):
-                  if '_blurTab(' in line or '_findTabToBlurTo(' in line:
-                      out.write('\n'.join(f'{j+1}: {s[j]}' for j in range(max(0,i-8),min(len(s),i+12)))+'\n\n')
-          PY
-      - name: Obtain stock Waterfox for native verification
+      - name: Obtain stock browser and driver
         run: |
-          curl --fail --location --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
-          sha256sum work/waterfox.tar.bz2 > artifacts/browser.sha256
+          curl --fail --silent --show-error --location --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
+          echo '2ab63d678d200a13dbcbd56df9d70b4e182c508dcb013f1d39304d63908dd482  work/waterfox.tar.bz2' | sha256sum --check
           tar -xjf work/waterfox.tar.bz2 -C work
-          work/waterfox/waterfox --version > artifacts/browser-version.txt 2>&1
-          python3 - <<'PY'
-          import zipfile
-          from pathlib import Path
-          for p in Path('work/waterfox').rglob('omni.ja'):
-              with zipfile.ZipFile(p) as z:
-                  for name in z.namelist():
-                      if name.endswith('/tabbrowser.js'):
-                          data=z.read(name)
-                          Path('artifacts/packaged-tabbrowser.js').write_bytes(data)
-                          print(p,name,len(data))
-          PY
+          python3 -m venv work/venv
+          work/venv/bin/pip install marionette_driver > artifacts/pip-install.log 2>&1
+          work/venv/bin/pip freeze > artifacts/driver-requirements.txt
+      - name: Exercise the stock browser before repair
+        run: |
+          work/venv/bin/python work/native-run.py baseline > artifacts/baseline-native.log 2>&1 || echo "$?" > artifacts/baseline-native-exit-code
+      - name: Prepare anchored candidate and verify JavaScript
+        run: |
+          python3 work/prepare.py > artifacts/prepare.log 2>&1
+          node --check artifacts/tabbrowser.js
+          node --check work/browser_close_unloaded_tabs.js
+          cp artifacts/tabbrowser.js work/tabbrowser.js
+          node --test work/baseline.test.cjs > artifacts/fixed-tests.log 2>&1
+      - name: Exercise the patched browser
+        run: |
+          work/venv/bin/python work/native-run.py fixed > artifacts/fixed-native.log 2>&1
+      - name: Store verified blobs without publishing a branch or release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 work/publish-blobs.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unloaded-close-baseline
-          path: artifacts/
-          retention-days: 3
+          name: unloaded-close-verification
+          path: |
+            artifacts/
+            work/browser_close_unloaded_tabs.js
+            work/prepare.py
+            work/native-run.py
+            work/baseline.test.cjs
+          retention-days: 7
