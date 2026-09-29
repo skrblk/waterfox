@@ -1,0 +1,52 @@
+name: Verify unloaded-tab closing
+on:
+  push:
+    branches: [investigation/unloaded-close-verification]
+permissions:
+  contents: read
+jobs:
+  investigate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch pinned source and baseline test
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p work artifacts
+          curl --fail --silent --show-error --retry 2 "https://raw.githubusercontent.com/$REPOSITORY/b5e33a99f3e4ca206a187076db39944ab98499fd/browser/components/tabbrowser/content/tabbrowser.js" -o work/tabbrowser.js
+          curl --fail --silent --show-error --retry 2 "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/baseline.test.cjs" -o work/baseline.test.cjs
+          sha256sum work/tabbrowser.js > artifacts/source.sha256
+          node --test work/baseline.test.cjs > artifacts/baseline-tests.log 2>&1 || echo "$?" > artifacts/baseline-exit-code
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('work/tabbrowser.js').read_text().splitlines()
+          with Path('artifacts/close-callers.txt').open('w') as out:
+              for i, line in enumerate(s):
+                  if '_blurTab(' in line or '_findTabToBlurTo(' in line:
+                      out.write('\n'.join(f'{j+1}: {s[j]}' for j in range(max(0,i-8),min(len(s),i+12)))+'\n\n')
+          PY
+      - name: Obtain stock Waterfox for native verification
+        run: |
+          curl --fail --location --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
+          sha256sum work/waterfox.tar.bz2 > artifacts/browser.sha256
+          tar -xjf work/waterfox.tar.bz2 -C work
+          work/waterfox/waterfox --version > artifacts/browser-version.txt 2>&1
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+          for p in Path('work/waterfox').rglob('omni.ja'):
+              with zipfile.ZipFile(p) as z:
+                  for name in z.namelist():
+                      if name.endswith('/tabbrowser.js'):
+                          data=z.read(name)
+                          Path('artifacts/packaged-tabbrowser.js').write_bytes(data)
+                          print(p,name,len(data))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unloaded-close-baseline
+          path: artifacts/
+          retention-days: 3
