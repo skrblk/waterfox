@@ -67,6 +67,9 @@ https_first_disabled = true
 ["browser_close_tab_by_dblclick.js"]
 tags = "vertical-tabs"
 
+["browser_close_unloaded_tabs.js"]
+tags = "vertical-tabs"
+
 ["browser_contextmenu_openlink_after_tabnavigated.js"]
 https_first_disabled = true
 support-files = ["test_bug1358314.html"]
