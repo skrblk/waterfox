@@ -1,4 +1,4 @@
-name: Verify unloaded-tab closing
+name: Verify shared tab successor policy
 on:
   push:
     branches: [investigation/unloaded-close-verification]
@@ -7,74 +7,77 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       REPOSITORY: ${{ github.repository }}
       REVISION: ${{ github.sha }}
-      BASE: b5e33a99f3e4ca206a187076db39944ab98499fd
+      BASE: 8216d31df264beb70e924d6bbc197f36f0e40cdd
+      PREVIOUS: 5e47764a358c4db09873076b6bad146f97468335
     steps:
-      - name: Fetch exact source and verification payload
+      - name: Fetch pinned sources and verification helpers
         run: |
           mkdir -p work artifacts
-          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$BASE/browser/components/tabbrowser/content/tabbrowser.js" -o work/tabbrowser.js
-          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$BASE/browser/components/tabbrowser/test/browser/tabs/browser.toml" -o work/browser.toml
-          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$BASE/.prettierrc.js" -o work/.prettierrc.js
-          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/baseline.test.cjs" -o work/baseline.test.cjs
-          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/unloaded-close-verification-1.0.0.zip" -o work/payload.zip
+          root="https://raw.githubusercontent.com/$REPOSITORY"
+          curl -fsS "$root/$BASE/browser/components/tabbrowser/content/tabbrowser.js" -o work/tabbrowser-original.js
+          curl -fsS "$root/$BASE/browser/components/tabbrowser/test/browser/tabs/browser.toml" -o work/browser.toml
+          curl -fsS "$root/$BASE/.prettierrc.js" -o work/.prettierrc.js
+          curl -fsS "$root/$PREVIOUS/browser/components/tabbrowser/content/tabbrowser.js" -o work/previous-tabbrowser.js
+          curl -fsS "$root/$PREVIOUS/browser/components/tabbrowser/test/browser/tabs/browser_close_unloaded_tabs.js" -o work/previous-test.js
+          curl -fsS "$root/$REVISION/tools/unloaded-close/unloaded-close-verification-1.0.0.zip" -o work/payload.zip
           echo '4bb82171904066903ba18ab4252924339f831ae94935582c06ebbbbe1fa4e8a2  work/payload.zip' | sha256sum --check
           unzip -q work/payload.zip -d work
-          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/verification-update-1.1.0.patch" -o work/update.patch
-          echo 'e61d2bc3b12b26b52898a4156848fa0c9eecf3b7e2d3925a2cd86bdf668511c1  work/update.patch' | sha256sum --check
-          patch -p1 -d work < work/update.patch
-          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/closure-boundary-update-1.0.0.py" -o work/closure_boundary.py
-          echo '7bda713ab5f1640094f7a1d5c0c850daf10c62933078819bee9b47616ba796a7  work/closure_boundary.py' | sha256sum --check
-          python3 work/closure_boundary.py
+          for name in refactor-policy-1.0.0.py prepare-tests-1.0.0.py prepare-shared-1.0.0.py lint-candidate-1.0.0.py; do
+            curl -fsS "$root/$REVISION/tools/unloaded-close/$name" -o "work/$name"
+          done
+          curl -fsS "$root/$REVISION/tools/unloaded-close/shared-native-tests-1.0.0.js" -o work/shared-native-tests.js
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('work/baseline.test.cjs')
-          s=p.read_text().replace("source.indexOf('    _findTabToBlurTo(aTab,')", "source.indexOf('    _findTabToBlurTo(')")
+          p=Path('work/native-run.py')
+          s=p.read_text()
+          marker='const add_task = fn => tasks.push(fn);'
+          assert s.count(marker)==1
+          s=s.replace(marker, marker+'\nconst requestLongerTimeout = () => {};')
           p.write_text(s)
           PY
-          cp work/tabbrowser.js artifacts/tabbrowser-original.js
-          node --test work/baseline.test.cjs > artifacts/baseline-tests.log 2>&1 || echo "$?" > artifacts/baseline-exit-code
-      - name: Obtain stock browser and pinned verification tools
+      - name: Install pinned browser and formatting tools
         run: |
-          curl --fail --silent --show-error --location --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
+          curl -fsSL --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
           echo '2ab63d678d200a13dbcbd56df9d70b4e182c508dcb013f1d39304d63908dd482  work/waterfox.tar.bz2' | sha256sum --check
           tar -xjf work/waterfox.tar.bz2 -C work
-          work/waterfox/waterfox --version > artifacts/browser-version.txt 2>&1
           python3 -m venv work/venv
           work/venv/bin/pip install marionette_driver==3.7.1 > artifacts/pip-install.log 2>&1
-          work/venv/bin/pip freeze > artifacts/driver-requirements.txt
           npm install --prefix work/style --ignore-scripts --no-package-lock prettier@3.8.1 > artifacts/formatter-install.log 2>&1
-      - name: Exercise the stock browser before repair
+          python3 work/prepare-shared-1.0.0.py sources > artifacts/prepare.log 2>&1
+          node --check artifacts/tabbrowser.js
+          node --check artifacts/browser_close_unloaded_tabs.js
+          node work/style/node_modules/prettier/bin/prettier.cjs --config work/.prettierrc.js --check artifacts/browser_close_unloaded_tabs.js > artifacts/format-check.log 2>&1
+      - name: Reproduce failures in the unchanged release
         run: |
           work/venv/bin/python work/native-run.py baseline > artifacts/baseline-native.log 2>&1 || echo "$?" > artifacts/baseline-native-exit-code
-      - name: Prepare anchored candidate and verify JavaScript
+          python3 work/prepare-shared-1.0.0.py check-baseline > artifacts/baseline-summary.json
+      - name: Test the exact candidate in the native browser
         run: |
-          python3 work/prepare.py > artifacts/prepare.log 2>&1
-          node --check artifacts/tabbrowser.js
-          node --check work/browser_close_unloaded_tabs.js
-          node work/style/node_modules/prettier/bin/prettier.cjs --config work/.prettierrc.js --check work/browser_close_unloaded_tabs.js > artifacts/format-check.log 2>&1
-          cp artifacts/tabbrowser.js work/tabbrowser.js
-          node --test work/baseline.test.cjs > artifacts/fixed-tests.log 2>&1
-      - name: Exercise the patched browser
-        run: |
+          python3 work/prepare-shared-1.0.0.py patch
           work/venv/bin/python work/native-run.py fixed > artifacts/fixed-native.log 2>&1
-      - name: Store verified blobs without publishing a branch or release
+          python3 work/prepare-shared-1.0.0.py check-fixed > artifacts/fixed-summary.json
+      - name: Run repository ESLint on the changed JavaScript
+        run: python3 work/lint-candidate-1.0.0.py
+      - name: Store verified blobs for the clean commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 work/publish-blobs.py
-      - uses: actions/upload-artifact@v4
+        run: python3 work/prepare-shared-1.0.0.py publish
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: unloaded-close-verification
+          name: shared-successor-verification
           path: |
             artifacts/
-            work/browser_close_unloaded_tabs.js
-            work/prepare.py
+            work/refactor-policy-1.0.0.py
+            work/prepare-tests-1.0.0.py
+            work/prepare-shared-1.0.0.py
+            work/lint-candidate-1.0.0.py
             work/native-run.py
-            work/closure_boundary.py
-            work/baseline.test.cjs
-            work/.prettierrc.js
+            work/shared-native-tests.js
+            work/previous-test.js
+            work/tabbrowser-original.js
           retention-days: 7
