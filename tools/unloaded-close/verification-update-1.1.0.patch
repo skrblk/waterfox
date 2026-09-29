@@ -1,0 +1,231 @@
+--- a/browser_close_unloaded_tabs.js
++++ b/browser_close_unloaded_tabs.js
+@@ -2,6 +2,8 @@
+  * http://creativecommons.org/publicdomain/zero/1.0/ */
+ 
+ "use strict";
++
++requestLongerTimeout(4);
+ 
+ async function withCloseUnloadWindow(mode, task, options = {}) {
+   await SpecialPowers.pushPrefEnv({
+@@ -258,3 +260,167 @@
+     });
+   });
+ }
++
++for (const mode of ["horizontal", "vertical", "tree"]) {
++  add_task(async function loaded_tab_in_collapsed_group_is_eligible() {
++    await withCloseUnloadWindow(mode, async (win, tabs) => {
++      const gb = win.gBrowser;
++      await BrowserTestUtils.removeTab(tabs[0]);
++      const group = gb.addTabGroup([tabs[4]], { label: "Collapsed" });
++      group.collapsed = true;
++      const verifyUnloaded = await discardCloseTestTabs(win, [tabs[1], tabs[3]]);
++      try {
++        await BrowserTestUtils.removeTab(tabs[2]);
++        is(gb.selectedTab, tabs[4], "The loaded tab in a collapsed group is used before creating a fallback");
++        is(gb.tabs.length, 3, "Selecting the hidden-group candidate creates no tab");
++      } finally {
++        verifyUnloaded();
++      }
++    });
++  });
++}
++
++add_task(async function pinned_close_skips_an_unloaded_pinned_neighbor() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    for (const tab of tabs.slice(2)) {
++      gb.pinTab(tab);
++    }
++    const verifyUnloaded = await discardCloseTestTabs(win, [tabs[3]]);
++    try {
++      await BrowserTestUtils.removeTab(tabs[2]);
++      is(gb.selectedTab, tabs[4], "Pinned succession skips an unloaded pinned tab");
++    } finally {
++      verifyUnloaded();
++    }
++  });
++});
++
++add_task(async function never_loaded_tab_is_protected_without_discarded_attribute() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    const lazyTab = gb.addTrustedTab("https://example.com/never-loaded", {
++      createLazyBrowser: true,
++      inBackground: true,
++      skipAnimation: true,
++      tabIndex: tabs[2]._tPos + 1,
++    });
++    ok(!lazyTab.linkedPanel, "The newly created tab is lazy");
++    ok(!lazyTab.hasAttribute("discarded"), "No explicit-unload marker is needed");
++    let insertions = 0;
++    const count = () => insertions++;
++    lazyTab.addEventListener("TabBrowserInserted", count);
++    try {
++      gb.setSuccessor(tabs[2], lazyTab);
++      await BrowserTestUtils.removeTab(tabs[2]);
++      is(gb.selectedTab, tabs[3], "A lazy explicit successor is skipped");
++      is(insertions, 0, "Closing does not materialize the never-loaded tab");
++      ok(!lazyTab.linkedPanel, "The tab remains lazy");
++    } finally {
++      lazyTab.removeEventListener("TabBrowserInserted", count);
++    }
++  });
++});
++
++add_task(async function repeated_fallback_closes_do_not_accumulate_tabs() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    const verifyUnloaded = await discardCloseTestTabs(win, tabs.filter(tab => tab != tabs[2]));
++    try {
++      for (let index = 0; index < 3; index++) {
++        await BrowserTestUtils.removeTab(gb.selectedTab);
++        is(gb.tabs.length, 5, "Repeated closing keeps exactly one live fallback");
++        is(gb.selectedBrowser.currentURI.spec, "about:blank", "Repeated fallback remains inert");
++      }
++    } finally {
++      verifyUnloaded();
++    }
++  });
++});
++
++add_task(async function moving_the_active_tab_does_not_wake_source_window_tabs() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    const verifyUnloaded = await discardCloseTestTabs(win, tabs.filter(tab => tab != tabs[2]));
++    const destination = await BrowserTestUtils.openNewBrowserWindow();
++    try {
++      const adopted = destination.gBrowser.adoptTab(tabs[2]);
++      ok(adopted, "The tab can still be adopted into another window");
++      is(adopted.documentGlobal, destination, "The adopted tab belongs to its destination");
++      is(gb.selectedBrowser.currentURI.spec, "about:blank", "The source window supplies a blank fallback");
++      is(gb.tabs.length, 5, "Adoption leaves one fallback in the source window");
++    } finally {
++      verifyUnloaded();
++      await BrowserTestUtils.closeWindow(destination);
++    }
++  });
++});
++
++add_task(async function closing_a_split_pane_does_not_wake_other_tabs() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    gb.addTabSplitView([tabs[2], tabs[4]]);
++    await BrowserTestUtils.switchTab(gb, tabs[2]);
++    const verifyUnloaded = await discardCloseTestTabs(win, [tabs[0], tabs[1], tabs[3]]);
++    try {
++      gb.removeTab(tabs[2], { animate: false, isUserTriggered: true });
++      ok(tabs[4].isConnected, "The companion pane survives closing the active pane");
++      ok(![tabs[0], tabs[1], tabs[3]].includes(gb.selectedTab), "Split-pane closure does not select an unloaded tab");
++    } finally {
++      verifyUnloaded();
++    }
++  });
++});
++
++add_task(async function explicit_unload_retains_its_existing_policy() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    const verifyUnloaded = await discardCloseTestTabs(win, [tabs[1], tabs[3]]);
++    try {
++      await gb.explicitUnloadTabs([tabs[2]]);
++      is(gb.selectedTab, tabs[4], "Explicit unload still finds the loaded successor");
++      ok(!tabs[2].linkedPanel, "The explicitly unloaded active tab becomes lazy");
++      is(gb.tabs.length, 5, "Explicit unloading did not close or add a tab");
++    } finally {
++      verifyUnloaded();
++    }
++  });
++});
++
++add_task(async function three_to_two_tabs_background_close_is_nonactivating() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    gb.removeTabs([tabs[0], tabs[4]], { animate: false });
++    const verifyUnloaded = await discardCloseTestTabs(win, [tabs[1]]);
++    try {
++      await BrowserTestUtils.removeTab(tabs[3]);
++      is(gb.tabs.length, 2, "Background close can reduce three tabs to two");
++      is(gb.selectedTab, tabs[2], "The active tab is unchanged");
++    } finally {
++      verifyUnloaded();
++    }
++  });
++});
++
++add_task(async function loaded_owner_keeps_precedence_over_adjacency() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    tabs[2].owner = tabs[0];
++    await BrowserTestUtils.removeTab(tabs[2]);
++    is(win.gBrowser.selectedTab, tabs[0], "A loaded owner still wins over adjacent tabs");
++  });
++});
++
++add_task(async function loaded_tree_child_is_preferred_to_unloaded_first_child() {
++  await withCloseUnloadWindow("tree", async (win, tabs) => {
++    const gb = win.gBrowser;
++    gb.TreeTabsService.attachTab(tabs[3], tabs[2]);
++    gb.TreeTabsService.attachTab(tabs[4], tabs[2]);
++    const verifyUnloaded = await discardCloseTestTabs(win, [tabs[3]]);
++    try {
++      await BrowserTestUtils.removeTab(tabs[2]);
++      is(gb.selectedTab, tabs[4], "Tree succession searches past its unloaded first child");
++    } finally {
++      verifyUnloaded();
++    }
++  });
++});
+--- a/prepare.py
++++ b/prepare.py
+@@ -5,6 +5,7 @@
+ import io
+ import json
+ import struct
++import subprocess
+ import zipfile
+ 
+ ROOT = Path('work')
+@@ -98,6 +99,12 @@
+     source = raw.decode()
+     changed = patch(source)
+     (ARTIFACTS / 'tabbrowser.js').write_text(changed)
++    formatter = ['node', 'work/style/node_modules/prettier/bin/prettier.cjs', '--config', 'work/.prettierrc.js']
++    start = changed.index('    _findTabToBlurTo(')
++    end = changed.index('    swapBrowsersAndCloseOther(', start)
++    subprocess.run(formatter + ['--range-start', str(start), '--range-end', str(end), '--write', str(ARTIFACTS / 'tabbrowser.js')], check=True)
++    subprocess.run(formatter + ['--write', 'work/browser_close_unloaded_tabs.js'], check=True)
++    changed = (ARTIFACTS / 'tabbrowser.js').read_text()
+     manifest = (ROOT / 'browser.toml').read_text()
+     assert git_blob(manifest.encode()) == '9f16c7d9d9a70fb7dd2651ad9dcea7d019b4b804'
+     revised_manifest = replace_once(manifest,
+@@ -118,7 +125,8 @@
+             target = targets[0]
+             packaged = old.read(target)
+             (ARTIFACTS / 'packaged-tabbrowser-original.js').write_bytes(packaged)
+-            candidate = patch(packaged.decode()).encode()
++            assert packaged == raw, 'The release source must match the pinned source byte-for-byte'
++            candidate = changed.encode()
+             temp = archive.with_suffix('.patched')
+             with zipfile.ZipFile(temp, 'w') as new:
+                 for entry in old.infolist():
+--- a/native-run.py
++++ b/native-run.py
+@@ -28,6 +28,7 @@
+ const is = (actual, expected, message) => record(actual === expected, message);
+ const info = message => assertions.push({test:testName, info:message});
+ const add_task = fn => tasks.push(fn);
++const requestLongerTimeout = () => {};
+ const pause = ms => new Promise(resolve => window.setTimeout(resolve, ms));
+ const waitForCondition = async (predicate, message = "condition") => {
+   const limit = Date.now() + 15000;
+@@ -83,7 +84,7 @@
+     client.start_session()
+     client.set_context('chrome')
+     client.timeout.script = 600
+-    metadata = client.execute_script('return {version:Services.appinfo.version,buildID:Services.appinfo.appBuildID,method:window.gBrowser._findTabToBlurTo.toString(),platform:Services.appinfo.OS};')
++    metadata = client.execute_script('return {version:Services.appinfo.version,displayVersion:ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs").AppConstants.MOZ_APP_VERSION_DISPLAY,buildID:Services.appinfo.appBuildID,method:window.gBrowser._findTabToBlurTo.toString(),platform:Services.appinfo.OS};')
+     (artifacts / f'{name}-runtime.json').write_text(json.dumps(metadata, indent=2))
+     body = Path('work/browser_close_unloaded_tabs.js').read_text().replace('"use strict";', '', 1)
+     suffix = r'''
