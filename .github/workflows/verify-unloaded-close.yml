@@ -26,7 +26,7 @@ jobs:
           curl -fsS "$root/$REVISION/tools/unloaded-close/unloaded-close-verification-1.0.0.zip" -o work/payload.zip
           echo '4bb82171904066903ba18ab4252924339f831ae94935582c06ebbbbe1fa4e8a2  work/payload.zip' | sha256sum --check
           unzip -q work/payload.zip -d work
-          for name in refactor-policy-1.0.0.py prepare-tests-1.0.0.py prepare-shared-1.0.0.py lint-candidate-1.0.0.py; do
+          for name in refactor-policy-1.0.0.py prepare-tests-1.0.0.py prepare-shared-1.0.0.py lint-candidate-1.0.0.py pr-checks-1.0.0.py; do
             curl -fsS "$root/$REVISION/tools/unloaded-close/$name" -o "work/$name"
           done
           curl -fsS "$root/$REVISION/tools/unloaded-close/shared-native-tests-1.0.0.js" -o work/shared-native-tests.js
@@ -39,6 +39,7 @@ jobs:
           s=s.replace(marker, marker+'\nconst requestLongerTimeout = () => {};')
           p.write_text(s)
           PY
+          python3 work/pr-checks-1.0.0.py
       - name: Install pinned browser and formatting tools
         run: |
           curl -fsSL --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
@@ -76,6 +77,7 @@ jobs:
             work/prepare-tests-1.0.0.py
             work/prepare-shared-1.0.0.py
             work/lint-candidate-1.0.0.py
+            work/pr-checks-1.0.0.py
             work/native-run.py
             work/shared-native-tests.js
             work/previous-test.js
