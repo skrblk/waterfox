@@ -5380,7 +5380,9 @@
         }
         if (!skipRemoves && tab.selected) {
           lastToClose = tab;
-          let toBlurTo = this._findTabToBlurTo(lastToClose, tabs);
+          let toBlurTo = this._findTabToBlurTo(lastToClose, tabs, {
+            excludeUnloaded: true,
+          });
           if (toBlurTo) {
             this._getSwitcher().warmupTab(toBlurTo);
           }
@@ -5749,13 +5751,14 @@
       const treeTabs = this.TreeTabsService;
       const treeCloseIsUserTriggered = isUserTriggered || !!triggeringEvent;
       let startedClosedTreeSet = false;
+      let closeSet = [aTab];
       if (treeTabs.enabled) {
         const hasSurvivingSplitPane = Array.from(
           aTab.splitview?.tabs || []
         ).some(
           tab => tab != aTab && !tab.closing && !tab._closedInMultiselection
         );
-        const closeSet = hasSurvivingSplitPane
+        closeSet = hasSurvivingSplitPane
           ? [aTab]
           : treeTabs.getTabsClosingWith(aTab, {
               isUserTriggered: treeCloseIsUserTriggered,
@@ -5779,6 +5782,7 @@
 
       if (
         !this._beginRemoveTab(aTab, {
+          closingTabs: closeSet,
           closeWindowFastpath: true,
           skipPermitUnload,
           closeWindowWithLastTab,
@@ -5899,6 +5903,7 @@
       aTab,
       {
         adoptedByTab,
+        closingTabs = [],
         closeWindowWithLastTab,
         closeWindowFastpath,
         skipPermitUnload,
@@ -5921,7 +5926,9 @@
         (!browser.isRemoteBrowser || this._hasBeforeUnload(aTab))
       ) {
         if (!prewarmed) {
-          let blurTab = this._findTabToBlurTo(aTab);
+          let blurTab = this._findTabToBlurTo(aTab, closingTabs, {
+            excludeUnloaded: true,
+          });
           if (blurTab) {
             this.warmupTab(blurTab);
           }
@@ -5961,7 +5968,7 @@
         aTab == this.selectedTab && browser._sharingState?.webRTC?.screen;
 
       if (!screenShareInActiveTab) {
-        this._blurTab(aTab);
+        this._blurTab(aTab, closingTabs);
       }
 
       var closeWindow = false;
@@ -6394,8 +6401,15 @@
      * @param   {MozTabbrowserTab[]} [aExcludeTabs=[]]
      *          Tabs to exclude from our search (i.e., because they are being
      *          closed along with aTab)
+     * @param   {object} [options]
+     * @param   {boolean} [options.excludeUnloaded=false]
+     *          Avoid restoring unloaded tabs when choosing a close successor.
      */
-    _findTabToBlurTo(aTab, aExcludeTabs = []) {
+    _findTabToBlurTo(
+      aTab,
+      aExcludeTabs = [],
+      { excludeUnloaded = false } = {}
+    ) {
       if (!aTab.selected) {
         return null;
       }
@@ -6404,6 +6418,13 @@
       }
 
       let excludeTabs = new Set(aExcludeTabs);
+      if (excludeUnloaded) {
+        for (const tab of this.tabs) {
+          if (!tab.linkedPanel || tab.closing || tab._closedInMultiselection) {
+            excludeTabs.add(tab);
+          }
+        }
+      }
 
       // If this tab has a successor, it should be selectable, since
       // hiding or closing a tab removes that tab as a successor.
@@ -6472,8 +6493,45 @@
       return tab;
     }
 
-    _blurTab(aTab) {
-      this.selectedTab = this._findTabToBlurTo(aTab);
+    _blurTab(aTab, aExcludeTabs = []) {
+      if (!aTab.selected) {
+        return;
+      }
+      let nextTab = this._findTabToBlurTo(aTab, aExcludeTabs, {
+        excludeUnloaded: true,
+      });
+      if (
+        !nextTab &&
+        !this.#windowIsClosing &&
+        this.tabs.some(
+          tab =>
+            tab != aTab &&
+            tab.isOpen &&
+            !tab.hidden &&
+            !tab._closedInMultiselection &&
+            !aExcludeTabs.includes(tab)
+        )
+      ) {
+        // Keep the fallback outside the closing tree or native group.
+        const treeTabs = this.TreeTabsService;
+        const root = treeTabs.getAncestors(aTab).at(-1) || aTab;
+        const anchor =
+          aTab.group?.tabs.at(-1) || treeTabs.getSubtreeEndAnchor(root) || aTab;
+        nextTab = this.addTrustedTab("about:blank", {
+          inBackground: true,
+          skipAnimation: true,
+          tabIndex: anchor._tPos + 1,
+          userContextId: aTab.userContextId,
+        });
+        if (nextTab.group) {
+          this.ungroupTab(nextTab);
+        }
+        if (treeTabs.enabled) {
+          treeTabs.detachTab(nextTab);
+          treeTabs.onTabMoved(nextTab);
+        }
+      }
+      this.selectedTab = nextTab;
     }
 
     /**
