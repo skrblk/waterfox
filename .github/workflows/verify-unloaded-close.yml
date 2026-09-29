@@ -26,6 +26,9 @@ jobs:
           curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/verification-update-1.1.0.patch" -o work/update.patch
           echo 'e61d2bc3b12b26b52898a4156848fa0c9eecf3b7e2d3925a2cd86bdf668511c1  work/update.patch' | sha256sum --check
           patch -p1 -d work < work/update.patch
+          curl --fail --silent --show-error "https://raw.githubusercontent.com/$REPOSITORY/$REVISION/tools/unloaded-close/closure-boundary-update-1.0.0.py" -o work/closure_boundary.py
+          echo '7bda713ab5f1640094f7a1d5c0c850daf10c62933078819bee9b47616ba796a7  work/closure_boundary.py' | sha256sum --check
+          python3 work/closure_boundary.py
           python3 - <<'PY'
           from pathlib import Path
           p=Path('work/baseline.test.cjs')
@@ -71,6 +74,7 @@ jobs:
             work/browser_close_unloaded_tabs.js
             work/prepare.py
             work/native-run.py
+            work/closure_boundary.py
             work/baseline.test.cjs
             work/.prettierrc.js
           retention-days: 7
