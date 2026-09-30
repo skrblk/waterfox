@@ -5749,13 +5749,14 @@
       const treeTabs = this.TreeTabsService;
       const treeCloseIsUserTriggered = isUserTriggered || !!triggeringEvent;
       let startedClosedTreeSet = false;
+      let closeSet = [aTab];
       if (treeTabs.enabled) {
         const hasSurvivingSplitPane = Array.from(
           aTab.splitview?.tabs || []
         ).some(
           tab => tab != aTab && !tab.closing && !tab._closedInMultiselection
         );
-        const closeSet = hasSurvivingSplitPane
+        closeSet = hasSurvivingSplitPane
           ? [aTab]
           : treeTabs.getTabsClosingWith(aTab, {
               isUserTriggered: treeCloseIsUserTriggered,
@@ -5779,6 +5780,7 @@
 
       if (
         !this._beginRemoveTab(aTab, {
+          closingTabs: closeSet,
           closeWindowFastpath: true,
           skipPermitUnload,
           closeWindowWithLastTab,
@@ -5899,6 +5901,7 @@
       aTab,
       {
         adoptedByTab,
+        closingTabs = [],
         closeWindowWithLastTab,
         closeWindowFastpath,
         skipPermitUnload,
@@ -5921,7 +5924,7 @@
         (!browser.isRemoteBrowser || this._hasBeforeUnload(aTab))
       ) {
         if (!prewarmed) {
-          let blurTab = this._findTabToBlurTo(aTab);
+          let blurTab = this._findTabToBlurTo(aTab, closingTabs);
           if (blurTab) {
             this.warmupTab(blurTab);
           }
@@ -5961,7 +5964,7 @@
         aTab == this.selectedTab && browser._sharingState?.webRTC?.screen;
 
       if (!screenShareInActiveTab) {
-        this._blurTab(aTab);
+        this._blurTab(aTab, closingTabs);
       }
 
       var closeWindow = false;
@@ -6308,9 +6311,7 @@
         // Avoid selecting any tab we're unloading now or
         // any tab that is already unloaded.
         unloadSelectedTab = true;
-        let tabsToExclude = tabs.concat(
-          this.tabContainer.allTabs.filter(tab => !tab.linkedPanel)
-        );
+        let tabsToExclude = [...tabs];
         for (const tab of tabs) {
           if (tab.splitview) {
             tabsToExclude.push(
@@ -6319,28 +6320,8 @@
           }
         }
         let newTab = this._findTabToBlurTo(this.selectedTab, tabsToExclude);
-        if (newTab) {
-          this.selectedTab = newTab;
-        } else {
-          allTabsUnloaded = true;
-          // all tabs are unloaded - show Firefox View if it's present, otherwise open a new tab
-          // Firefox View counts as present if its tab is already open, or if the button
-          // is visible, so as to not do this in private browsing mode or if the user
-          // has removed the button from their toolbar (bug 1946432, bug 1989429)
-          let firefoxViewAvailable =
-            FirefoxViewHandler.tab &&
-            FirefoxViewHandler.button?.checkVisibility({
-              checkVisibilityCSS: true,
-              visibilityProperty: true,
-            });
-          if (firefoxViewAvailable) {
-            FirefoxViewHandler.openTab("opentabs");
-          } else {
-            this.selectedTab = this.addTrustedTab(BROWSER_NEW_TAB_URL, {
-              skipAnimation: true,
-            });
-          }
-        }
+        allTabsUnloaded = !newTab;
+        this._selectTabOrFallback(newTab);
       }
       let memoryUsageBeforeUnload = await getTotalMemoryUsage();
       let timeBeforeUnload = performance.now();
@@ -6404,6 +6385,11 @@
       }
 
       let excludeTabs = new Set(aExcludeTabs);
+      for (let tab of this.tabContainer.allTabs) {
+        if (!tab.linkedPanel || tab.closing || tab._closedInMultiselection) {
+          excludeTabs.add(tab);
+        }
+      }
 
       // If this tab has a successor, it should be selectable, since
       // hiding or closing a tab removes that tab as a successor.
@@ -6472,8 +6458,44 @@
       return tab;
     }
 
-    _blurTab(aTab) {
-      this.selectedTab = this._findTabToBlurTo(aTab);
+    _selectTabOrFallback(aTab) {
+      if (aTab) {
+        this.selectedTab = aTab;
+        return;
+      }
+      // all tabs are unloaded - show Firefox View if it's present, otherwise open a new tab
+      // Firefox View counts as present if its tab is already open, or if the button
+      // is visible, so as to not do this in private browsing mode or if the user
+      // has removed the button from their toolbar (bug 1946432, bug 1989429)
+      let firefoxViewAvailable =
+        FirefoxViewHandler.tab &&
+        FirefoxViewHandler.button?.checkVisibility({
+          checkVisibilityCSS: true,
+          visibilityProperty: true,
+        });
+      if (firefoxViewAvailable) {
+        FirefoxViewHandler.openTab("opentabs");
+      } else {
+        this.selectedTab = this.addTrustedTab(BROWSER_NEW_TAB_URL, {
+          skipAnimation: true,
+        });
+      }
+    }
+
+    _blurTab(aTab, aExcludeTabs = []) {
+      if (!aTab.selected) {
+        return;
+      }
+      let nextTab = this._findTabToBlurTo(aTab, aExcludeTabs);
+      if (
+        nextTab ||
+        (!this.#windowIsClosing &&
+          this.nonHiddenTabs.some(
+            tab => tab != aTab && !aExcludeTabs.includes(tab)
+          ))
+      ) {
+        this._selectTabOrFallback(nextTab);
+      }
     }
 
     /**
