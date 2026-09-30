@@ -2,6 +2,13 @@
 
 Waterfox is a customisable browser based on Mozilla Firefox. This repository contains Mozilla platform code, Waterfox product code, branding, features, packaging, and release files.
 
+## Changes in this fork
+
+- **Closing a tab does not restore unloaded tabs.** When the selected tab
+  closes, the next tab is chosen among loaded tabs only. When none is left,
+  Firefox View or a new tab opens, as explicit unloading already did. Details:
+  [waterfox/docs/tab-close-policy.md](waterfox/docs/tab-close-policy.md).
+
 ## Building
 
 Waterfox uses the Mozilla build system. The usual `./mach` entry points apply:
