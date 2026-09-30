@@ -3,43 +3,73 @@ on:
   push:
     branches: [investigation/tab-handoff-2026-09-30]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  probe:
+  verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      REPOSITORY: ${{ github.repository }}
+      REVISION: ${{ github.sha }}
+      BASE: d71eb03f6174cc6db2f1ca75c243b77fe5bb5f19
     steps:
-      - name: Fetch isolated regression probe
-        env:
-          REPOSITORY: ${{ github.repository }}
-          REVISION: ${{ github.sha }}
+      - name: Fetch pinned source and regression tests
         run: |
           mkdir -p work artifacts
           root="https://raw.githubusercontent.com/$REPOSITORY"
-          curl -fsS "$root/accef28801e5956bac7da2a272902b12a1a0d446/tools/unloaded-close/unloaded-close-verification-1.0.0.zip" -o work/payload.zip
-          echo '4bb82171904066903ba18ab4252924339f831ae94935582c06ebbbbe1fa4e8a2  work/payload.zip' | sha256sum --check
-          unzip -q work/payload.zip -d work
-          curl -fsS "$root/$REVISION/tools/unloaded-close/probe-finder-only-1.0.0.js" -o work/browser_close_unloaded_tabs.js
-      - name: Install isolated stock Waterfox
+          curl -fsS "$root/$BASE/browser/components/tabbrowser/content/tabbrowser.js" -o work/tabbrowser-original.js
+          curl -fsS "$root/$BASE/browser/components/tabbrowser/test/browser/tabs/browser_tabSuccessors.js" -o work/original-browser_tabSuccessors.js
+          curl -fsS "$root/$BASE/waterfox/browser/components/tabbrowser/test/browser/browser_tree_tabs_basic.js" -o work/original-browser_tree_tabs_basic.js
+          curl -fsS "$root/$BASE/waterfox/browser/components/tabbrowser/test/browser/head.js" -o work/tree-head.js
+          curl -fsS "$root/$BASE/.prettierrc.js" -o work/.prettierrc.js
+          curl -fsS "$root/2481a82570f0c37e3541620d15cee10ca3b1a529/browser/components/tabbrowser/test/browser/tabs/browser_close_unloaded_tabs.js" -o work/previous-test.js
+          for name in refactor-handoff-1.0.0.py prepare-handoff-1.0.0.py native-handoff-1.0.0.py lint-handoff-1.0.0.py successor-tests-1.0.0.js tree-tests-1.0.0.js extra-boundaries-1.0.0.js; do
+            curl -fsS "$root/$REVISION/tools/unloaded-close/$name" -o "work/$name"
+          done
+      - name: Install isolated release and verification tools
         run: |
           curl -fsSL --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
           echo '2ab63d678d200a13dbcbd56df9d70b4e182c508dcb013f1d39304d63908dd482  work/waterfox.tar.bz2' | sha256sum --check
           tar -xjf work/waterfox.tar.bz2 -C work
           python3 -m venv work/venv
           work/venv/bin/pip install marionette_driver==3.7.1 > artifacts/pip-install.log 2>&1
-      - name: Compare unchanged and filtering-only handoff
+          npm install --prefix work/style --ignore-scripts --no-package-lock prettier@3.8.1 > artifacts/formatter-install.log 2>&1
+          python3 work/prepare-handoff-1.0.0.py prepare > artifacts/prepare.log 2>&1
+          node --check artifacts/tabbrowser.js
+          node --check artifacts/browser_tabSuccessors.js
+          node --check artifacts/browser_tree_tabs_basic.js
+      - name: Run regressions against unchanged Waterfox
         run: |
-          work/venv/bin/python work/native-run.py probe > artifacts/probe.log 2>&1 || echo "$?" > artifacts/probe-exit-code
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          d=json.loads(Path('artifacts/probe-native.json').read_text())
-          print(json.dumps(d,indent=2))
-          assert d.get('tasks')==4 and not d.get('errors') and not d.get('fatal')
-          PY
+          work/venv/bin/python work/native-handoff-1.0.0.py baseline-generic artifacts/browser_tabSuccessors.js > artifacts/baseline-generic.log 2>&1 || echo "$?" > artifacts/baseline-generic-exit-code
+          python3 work/prepare-handoff-1.0.0.py check baseline-generic fail > artifacts/baseline-generic-summary.json
+          work/venv/bin/python work/native-handoff-1.0.0.py baseline-tree work/tree-head.js work/formatted-tree-tests-1.0.0.js > artifacts/baseline-tree.log 2>&1 || echo "$?" > artifacts/baseline-tree-exit-code
+          python3 work/prepare-handoff-1.0.0.py check baseline-tree fail > artifacts/baseline-tree-summary.json
+      - name: Run exact candidate in the native browser
+        run: |
+          python3 work/prepare-handoff-1.0.0.py patch
+          work/venv/bin/python work/native-handoff-1.0.0.py fixed-generic artifacts/browser_tabSuccessors.js > artifacts/fixed-generic.log 2>&1
+          python3 work/prepare-handoff-1.0.0.py check fixed-generic > artifacts/fixed-generic-summary.json
+          work/venv/bin/python work/native-handoff-1.0.0.py fixed-tree work/tree-head.js work/formatted-tree-tests-1.0.0.js > artifacts/fixed-tree.log 2>&1
+          python3 work/prepare-handoff-1.0.0.py check fixed-tree > artifacts/fixed-tree-summary.json
+          work/venv/bin/python work/native-handoff-1.0.0.py fixed-boundaries work/legacy-boundaries.js > artifacts/fixed-boundaries.log 2>&1
+          python3 work/prepare-handoff-1.0.0.py check fixed-boundaries > artifacts/fixed-boundaries-summary.json
+      - name: Run repository lint and whitespace checks
+        run: python3 work/lint-handoff-1.0.0.py
+      - name: Store tested file blobs without publishing a branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 work/prepare-handoff-1.0.0.py publish
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: handoff-probe
-          path: artifacts/
+          name: tab-handoff-verification
+          path: |
+            artifacts/
+            work/*-1.0.0.py
+            work/*tests-1.0.0.js
+            work/*boundaries-1.0.0.js
+            work/tree-head.js
+            work/legacy-boundaries.js
+            work/tabbrowser-original.js
+            work/original-browser*.js
           retention-days: 7
