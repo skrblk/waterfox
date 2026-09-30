@@ -1,0 +1,45 @@
+name: Verify tab handoff
+on:
+  push:
+    branches: [investigation/tab-handoff-2026-09-30]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Fetch isolated regression probe
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p work artifacts
+          root="https://raw.githubusercontent.com/$REPOSITORY"
+          curl -fsS "$root/accef28801e5956bac7da2a272902b12a1a0d446/tools/unloaded-close/unloaded-close-verification-1.0.0.zip" -o work/payload.zip
+          echo '4bb82171904066903ba18ab4252924339f831ae94935582c06ebbbbe1fa4e8a2  work/payload.zip' | sha256sum --check
+          unzip -q work/payload.zip -d work
+          curl -fsS "$root/$REVISION/tools/unloaded-close/probe-finder-only-1.0.0.js" -o work/browser_close_unloaded_tabs.js
+      - name: Install isolated stock Waterfox
+        run: |
+          curl -fsSL --retry 2 --max-time 180 https://cdn.waterfox.com/waterfox/releases/6.7.4/Linux_x86_64/waterfox-6.7.4.tar.bz2 -o work/waterfox.tar.bz2
+          echo '2ab63d678d200a13dbcbd56df9d70b4e182c508dcb013f1d39304d63908dd482  work/waterfox.tar.bz2' | sha256sum --check
+          tar -xjf work/waterfox.tar.bz2 -C work
+          python3 -m venv work/venv
+          work/venv/bin/pip install marionette_driver==3.7.1 > artifacts/pip-install.log 2>&1
+      - name: Compare unchanged and filtering-only handoff
+        run: |
+          work/venv/bin/python work/native-run.py probe > artifacts/probe.log 2>&1 || echo "$?" > artifacts/probe-exit-code
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('artifacts/probe-native.json').read_text())
+          print(json.dumps(d,indent=2))
+          assert d.get('tasks')==4 and not d.get('errors') and not d.get('fatal')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: handoff-probe
+          path: artifacts/
+          retention-days: 7
