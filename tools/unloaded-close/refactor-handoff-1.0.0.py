@@ -58,15 +58,6 @@ def refactor(source):
     source = replace_once(source,
         '      if (!screenShareInActiveTab) {\n        this._blurTab(aTab);',
         '      if (!screenShareInActiveTab) {\n        this._blurTab(aTab, closingTabs);')
-    source = replace_once(source,
-        '      aTab._endRemoveArgs = [closeWindow, newTab];',
-        '      aTab._endRemoveArgs = [closeWindow, newTab, closingTabs];')
-    source = replace_once(source,
-        '      var [aCloseWindow, aNewTab] = aTab._endRemoveArgs;',
-        '      var [aCloseWindow, aNewTab, closingTabs] = aTab._endRemoveArgs;')
-    source = replace_once(source,
-        '      aTab.collapsed = true;\n      this._blurTab(aTab);',
-        '      aTab.collapsed = true;\n      this._blurTab(aTab, closingTabs);')
     return source
 
 if __name__ == '__main__':
