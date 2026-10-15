@@ -544,3 +544,54 @@ add_task(async function test_close_whole_tree_preserves_window_policy() {
     }
   }
 });
+
+add_task(async function test_root_tabs_share_one_icon_column() {
+  await enableTreeTabs();
+  const start = (tab, selector) =>
+    tab.querySelector(selector).getBoundingClientRect().left;
+  let rootA = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  let rootB = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  let child;
+  try {
+    await waitForTreeUpdate();
+    const before = start(rootA, ".tab-icon-stack");
+    child = await openTabWithTree(rootA);
+    ok(hasTreeChildren(rootA), "The first root has a child");
+    for (const selector of [".tab-icon-stack", ".tab-label-container"]) {
+      is(
+        start(rootA, selector),
+        start(rootB, selector),
+        `${selector}: a root with a child aligns with a root without`
+      );
+    }
+    is(
+      start(rootA, ".tab-icon-stack"),
+      before,
+      "Gaining a child does not move the root's content"
+    );
+    const chevron = rootA
+      .querySelector(".tab-tree-disclosure")
+      .getBoundingClientRect();
+    const row = rootA.getBoundingClientRect();
+    ok(chevron.width > 0, "The chevron has a hit area");
+    ok(chevron.left >= row.left - 0.5, "The chevron starts inside the row");
+    ok(
+      chevron.right <= start(rootA, ".tab-icon-stack") + 0.5,
+      "The chevron ends before the favicon"
+    );
+    await BrowserTestUtils.removeTab(child);
+    await waitForTreeUpdate();
+    ok(!hasTreeChildren(rootA), "The root lost its only child");
+    is(
+      start(rootA, ".tab-icon-stack"),
+      before,
+      "Losing the child does not move the root's content either"
+    );
+  } finally {
+    for (let tab of [child, rootB, rootA]) {
+      if (tab?.isConnected) {
+        await BrowserTestUtils.removeTab(tab);
+      }
+    }
+  }
+});

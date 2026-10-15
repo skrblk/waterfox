@@ -42,31 +42,18 @@
   position: relative;
 }
 
-#vertical-tabs[tree-tabs-enabled] .tabbrowser-tab[data-tree-level]:not([pinned]) .tab-content {
-  padding-inline-start: calc(var(--tab-inline-padding) + var(--tree-twisty-size) + var(--tree-twisty-gap)) !important;
-}
-
-#vertical-tabs[tree-tabs-enabled] .tabbrowser-tab[data-tree-level="0"]:not([pinned], [data-tree-has-children], tab-split-view-wrapper > *) .tab-content,
-#vertical-tabs[tree-tabs-enabled] #tabbrowser-tabs:not([expanded]) .tabbrowser-tab[data-tree-level]:not([pinned]) .tab-content {
-  padding-inline-start: var(--tab-inline-padding) !important;
-}
-
-/* Keep leaf icons aligned without painting an unused disclosure slot. */
-#vertical-tabs[tree-tabs-enabled]
-  #tabbrowser-tabs[expanded]
-  .tabbrowser-tab[data-tree-level]:not([data-tree-level="0"], [data-tree-has-children], [pinned], tab-split-view-wrapper > *)
-  .tab-background {
-  margin-inline-start: calc(var(--tab-inner-inline-margin) + var(--tree-twisty-size) + var(--tree-twisty-gap)) !important;
-}
-
+/* The disclosure control lives in the row's own start padding, left of the
+   favicon, so no row reserves extra content space for it: a parent's content
+   starts where a leaf's does, whatever the level, and a tab does not move
+   when it gains or loses its first child. */
 #vertical-tabs[tree-tabs-enabled] #tabbrowser-tabs[expanded] .tab-tree-disclosure:not([hidden]) {
   appearance: none;
   box-sizing: border-box;
   display: block;
   position: absolute;
-  inset-inline-start: var(--tab-inline-padding);
+  inset-inline-start: 0;
   inset-block: 0;
-  inline-size: calc(var(--tree-twisty-size) + var(--tree-twisty-gap));
+  inline-size: var(--tab-inline-padding);
   min-inline-size: 0;
   margin: 0;
   padding: 0;
@@ -82,10 +69,6 @@
 
   @media (prefers-contrast), (forced-colors) {
     border: 1px solid var(--border-color);
-
-    &::before {
-      inset-inline-start: -1px;
-    }
   }
 }
 
@@ -107,7 +90,7 @@
   content: url("chrome://global/skin/icons/arrow-down-12.svg");
   display: block;
   position: absolute;
-  inset-inline-start: 0;
+  inset-inline-end: var(--space-xxsmall);
   inset-block-start: 50%;
   inline-size: var(--tree-twisty-size);
   block-size: var(--tree-twisty-size);

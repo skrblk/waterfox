@@ -16,6 +16,10 @@ Waterfox is a customisable browser based on Mozilla Firefox. This repository con
   closes, the next tab is chosen among loaded tabs only. When none is left,
   Firefox View or a new tab opens, as explicit unloading already did. Details:
   [waterfox/docs/tab-close-policy.md](waterfox/docs/tab-close-policy.md).
+- **Tree tabs line up by level.** The disclosure chevron sits in the row's
+  start padding instead of a reserved content slot, so a root tab no longer
+  moves when it gains or loses children, and parents line up with leaves of
+  the same level.
 
 ## Building
 
