@@ -414,15 +414,21 @@ add_task(async function test_disclosure_hit_area_uses_logical_css_geometry() {
         );
         isApprox(
           direction == "rtl" ? row.right - hit.right : hit.left - row.left,
-          padding,
+          0,
           0.1,
-          `${direction}: the hit area starts at the old inline padding boundary`
+          `${direction}: the hit area starts at the row's inline start`
         );
         isApprox(
           hit.width,
-          contentPadding - padding,
+          contentPadding,
           0.1,
-          "The hit area includes the chevron and gap, but not the favicon"
+          "The hit area is the row's start padding, up to the favicon"
+        );
+        isApprox(
+          contentPadding,
+          padding,
+          0.1,
+          "A parent reserves no extra content space for the chevron"
         );
         for (const [x, expected] of [
           [hit.left - 1, null],
