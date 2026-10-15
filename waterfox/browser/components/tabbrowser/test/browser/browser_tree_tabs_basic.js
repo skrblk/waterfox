@@ -544,3 +544,46 @@ add_task(async function test_close_whole_tree_preserves_window_policy() {
     }
   }
 });
+
+add_task(async function test_root_tabs_share_one_icon_column() {
+  await enableTreeTabs();
+  const box = getVerticalTabsBox();
+  const padding = tab =>
+    window.getComputedStyle(tab.querySelector(".tab-content"))
+      .paddingInlineStart;
+  let rootA = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  let rootB = BrowserTestUtils.addTab(gBrowser, "about:blank");
+  let child;
+  try {
+    await waitForTreeUpdate();
+    ok(
+      !box.hasAttribute("tree-roots-with-children"),
+      "No root has children yet"
+    );
+    child = await openTabWithTree(rootA);
+    ok(hasTreeChildren(rootA), "The first root has a child");
+    ok(
+      box.hasAttribute("tree-roots-with-children"),
+      "The strip knows that a root has children"
+    );
+    is(
+      padding(rootB),
+      padding(rootA),
+      "A childless root keeps the padding of a root with children"
+    );
+    await BrowserTestUtils.removeTab(child);
+    await waitForTreeUpdate();
+    ok(!hasTreeChildren(rootA), "The root lost its only child");
+    ok(
+      !box.hasAttribute("tree-roots-with-children"),
+      "The mark goes with the last root child"
+    );
+    is(padding(rootB), padding(rootA), "Both roots return to the same padding");
+  } finally {
+    for (let tab of [child, rootB, rootA]) {
+      if (tab?.isConnected) {
+        await BrowserTestUtils.removeTab(tab);
+      }
+    }
+  }
+});
