@@ -3244,9 +3244,8 @@ function createTreeTabsController(window) {
       const maxIndent = Math.max(0, containerWidth - minTabContentWidth);
       const maxVisualLevel = Math.floor(maxIndent / indentPx);
       for (const tab of window.gBrowser.tabs) {
-        this._updateTab(tab, indentPx, maxVisualLevel, false);
+        this._updateTab(tab, indentPx, maxVisualLevel);
       }
-      this._updateRootsWithChildren();
       this._updateHiddenTabs();
     },
 
@@ -3254,28 +3253,10 @@ function createTreeTabsController(window) {
       for (const tab of window.gBrowser.tabs) {
         this._clearTab(tab);
       }
-      this._verticalTabsBox?.removeAttribute("tree-roots-with-children");
       this._tabContainer?._invalidateCachedVisibleTabs?.();
     },
 
-    // Root rows reserve the disclosure slot only while some root has
-    // children, so a root's icon stays put when it gains or loses its first
-    // child and every root keeps one icon column.
-    _updateRootsWithChildren() {
-      const box = this._verticalTabsBox;
-      if (!box) {
-        return;
-      }
-      const any = window.gBrowser.tabs.some(
-        tab =>
-          !tab.pinned &&
-          tab.dataset.treeLevel === "0" &&
-          tab.hasAttribute("data-tree-has-children")
-      );
-      box.toggleAttribute("tree-roots-with-children", any);
-    },
-
-    _updateTab(tab, indentPx, maxVisualLevel, updateRoots = true) {
+    _updateTab(tab, indentPx, maxVisualLevel) {
       if (!tab || this._deferTreeRender()) {
         return;
       }
@@ -3332,9 +3313,6 @@ function createTreeTabsController(window) {
         tabContent?.removeAttribute("data-tree-counter");
       }
       this._updateTabTooltip(tab, descendants, level);
-      if (updateRoots && level === 0) {
-        this._updateRootsWithChildren();
-      }
     },
 
     _updateTabDisclosure(tab, hasChildren, collapsed) {
