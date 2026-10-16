@@ -10,6 +10,11 @@ Waterfox is a customisable browser based on Mozilla Firefox. This repository con
 
 ## Changes in this fork
 
+This repository is Waterfox with a few changes on top of the newest upstream
+release. [Releases](https://github.com/skrblk/waterfox/releases) of this fork are
+named after the upstream release they are built on plus a letter, and carry the
+changes as a patch series.
+
 - **Closing a tab does not restore unloaded tabs.** When the selected tab
   closes, the next tab is chosen among loaded tabs only. When none is left,
   Firefox View or a new tab opens, as explicit unloading already did. Details:
