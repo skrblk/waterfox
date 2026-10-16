@@ -1,11 +1,9 @@
 # Waterfox
 
 ```
-this is an idea made concrete using AI in service of my self-replicating rabbit holes
--> do not interpret it as meticulously engineered production software
+Browsers are not my area of expertise. This is a bunch of modifications and bugfix attempts.
+-> do not interpret this fork as meticulously engineered production software
                                                                  (or do so at your own peril)
-                                  ⟢ concept ⟣
-                                               is basically the entire point.
 ```
 
 Waterfox is a customisable browser based on Mozilla Firefox. This repository contains Mozilla platform code, Waterfox product code, branding, features, packaging, and release files.
