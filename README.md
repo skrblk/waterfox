@@ -29,9 +29,10 @@ changes as a patch series.
   parent is replaced by a group tab, and the group tab closes once it holds
   one child or none. While a window was restoring (up to ten seconds after it
   opens or is restored) that cleanup was skipped and its request dropped, so
-  group tabs emptied in that time, by a bulk close for example, stayed for
-  good, nested ones included. The request is now kept and run once the
-  restore ends.
+  group tabs emptied in that time, by a bulk close for example, stayed, nested
+  ones included, until something else rescanned all group tabs: a tab
+  finishing its restore, such as an unloaded tab being selected, or tree tabs
+  being turned on. The request is now kept and run once the restore ends.
 
 ## Building
 
