@@ -1365,6 +1365,32 @@ add_task(function test_same_site_orphan_becomes_child_of_current_tab() {
     null,
     "Bulk-opened tabs stay roots"
   );
+
+  const foldedGroup = createMockTab(win);
+  foldedGroup.linkedBrowser = {
+    currentURI: {
+      spec: "chrome://browser/content/treegroup/group-tab.xhtml?title=Group+1",
+    },
+  };
+  const groupChild = createMockTab(win);
+  TreeTabsService.attachTab(groupChild, foldedGroup);
+  TreeTabsService.collapseSubtree(foldedGroup);
+  win.gBrowser.selectedTab = foldedGroup;
+
+  const secondGroup = createMockTab(win);
+  TreeTabsService.onTabOpened(secondGroup, {
+    url: "chrome://browser/content/treegroup/group-tab.xhtml?title=Group+2",
+    currentTab: foldedGroup,
+  });
+  Assert.equal(
+    TreeTabsService.getParent(secondGroup),
+    null,
+    "Internal chrome:// pages do not auto-attach as same-site children"
+  );
+  Assert.ok(
+    TreeTabsService.isCollapsed(foldedGroup),
+    "Opening another group page keeps the selected folded group collapsed"
+  );
 });
 
 add_task(function test_next_sibling_of_places_after_base() {
