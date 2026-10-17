@@ -44,6 +44,9 @@ changes as a patch series.
 - **Middle-clicking the tree disclosure keeps the tab open.** Primary clicks
   still collapse or expand the tree, and middle-clicking the ordinary row
   still closes the tab.
+- **Tree edits made during the restore guard are saved afterward.** Once all
+  restore blockers clear, both window structure and per-tab metadata catch
+  up. An unresolved saved snapshot remains protected.
 
 ## Building
 
