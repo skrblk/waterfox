@@ -523,23 +523,51 @@ export const TreeTabsService = {
   // the normal area: after the subtree of the last tab opened from the same
   // pinned tab, or right after the pinned block.
   getPinnedOpenerAnchor(opener, lastRelatedTab, window) {
-    if (!this.isActive(window) || !opener?.pinned) {
+    const tabs = window?.gBrowser?.tabs;
+    if (
+      !this.isActive(window) ||
+      !opener?.pinned ||
+      opener.closing ||
+      opener.documentGlobal != window ||
+      !tabs?.includes(opener)
+    ) {
       return null;
     }
-    if (lastRelatedTab && !lastRelatedTab.pinned && !lastRelatedTab.closing) {
+    if (
+      getIntPref(PREF_AUTO_ATTACH, 1) === 1 &&
+      getBoolPref(PREF_AUTO_GROUP_PINNED_OPENER, true)
+    ) {
+      const group = lazy.TreeTabsGroups.findGroupTabForOpener(
+        window,
+        lazy.TreeTabsStore.getTabGuid(opener)
+      );
+      if (group) {
+        return this.getSubtreeEndAnchor(group);
+      }
+    }
+    if (
+      lastRelatedTab &&
+      !lastRelatedTab.pinned &&
+      !lastRelatedTab.closing &&
+      lastRelatedTab.documentGlobal == window &&
+      tabs.includes(lastRelatedTab)
+    ) {
       return this.getSubtreeEndAnchor(lastRelatedTab);
     }
-    const tabs = window?.gBrowser?.tabs;
-    if (!tabs) {
-      return null;
-    }
+    let relatedAnchor = null;
     let lastPinned = null;
     for (const tab of tabs) {
       if (tab.pinned) {
         lastPinned = tab;
+      } else if (
+        !tab.closing &&
+        tab.openerTab === opener &&
+        !this.getParent(tab)
+      ) {
+        relatedAnchor = this.getSubtreeEndAnchor(tab);
       }
     }
-    return lastPinned;
+    return relatedAnchor || lastPinned;
   },
 
   // The active tab counts as the opener of an openerless tab pointed at the
