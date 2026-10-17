@@ -58,6 +58,26 @@ add_task(async function test_disclosure_mouse_buttons() {
     for (const [parent, position] of [[top, "start"], [bottom, "end"]]) {
       const disclosure = parent.querySelector(".tab-tree-disclosure");
       await targetCenter(disclosure, position);
+      const initialShown = BrowserTestUtils.waitForPopupEvent(menu, "shown");
+      EventUtils.synthesizeMouseAtCenter(disclosure, {
+        type: "contextmenu",
+        button: 2,
+      });
+      await initialShown;
+      is(
+        window.TabContextMenu.contextTab,
+        parent,
+        "First direct right disclosure input opens the tab's context menu without row warmup"
+      );
+      ok(
+        parent.isConnected && !service.isCollapsed(parent),
+        "First direct right disclosure input preserves the tree"
+      );
+      const initialHidden = BrowserTestUtils.waitForPopupEvent(menu, "hidden");
+      menu.hidePopup();
+      await initialHidden;
+
+      await targetCenter(disclosure, position);
       EventUtils.synthesizeMouseAtCenter(disclosure, { button: 1 });
       ok(
         parent.isConnected && !parent.closing,
@@ -80,6 +100,44 @@ add_task(async function test_disclosure_mouse_buttons() {
         "Primary disclosure input expands the tree"
       );
 
+      const rowShown = BrowserTestUtils.waitForPopupEvent(menu, "shown");
+      EventUtils.synthesizeMouseAtCenter(
+        parent.querySelector(".tab-label-container"),
+        { type: "contextmenu", button: 2 }
+      );
+      await rowShown;
+      is(
+        window.TabContextMenu.contextTab,
+        parent,
+        "Right row input opens the tab's context menu"
+      );
+      const rowHidden = BrowserTestUtils.waitForPopupEvent(menu, "hidden");
+      menu.hidePopup();
+      await rowHidden;
+
+      const sidebarMain = document.querySelector("sidebar-main");
+      if (sidebarMain) {
+        sidebarMain.contextMenuTarget = null;
+      }
+      await targetCenter(disclosure, position);
+      const shown = BrowserTestUtils.waitForPopupEvent(menu, "shown");
+      EventUtils.synthesizeMouseAtCenter(disclosure, {
+        type: "contextmenu",
+        button: 2,
+      });
+      await shown;
+      is(
+        window.TabContextMenu.contextTab,
+        parent,
+        "Right disclosure input opens the tab's context menu after sidebar target reset"
+      );
+      ok(
+        parent.isConnected && !service.isCollapsed(parent),
+        "Right disclosure input preserves the tree"
+      );
+      const hidden = BrowserTestUtils.waitForPopupEvent(menu, "hidden");
+      menu.hidePopup();
+      await hidden;
     }
 
     const row = addTab();
