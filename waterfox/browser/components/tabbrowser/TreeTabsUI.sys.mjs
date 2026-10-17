@@ -2119,6 +2119,17 @@ function createTreeTabsController(window) {
         if (!lazy.TreeTabsService.isActive(window)) {
           return;
         }
+        // cleanupNeedlessGroupTabs does nothing while a window restores.
+        // Keep the request and try again, rather than dropping it: a group
+        // tab whose children closed meanwhile would otherwise stay for good.
+        if (lazy.TreeTabsStore.isRestorePending(window)) {
+          for (const tab of pending) {
+            this._groupCleanupTabs.add(tab);
+          }
+          this._groupCleanupScanAll ||= scanAll;
+          this._scheduleGroupCleanup([], 1000);
+          return;
+        }
         if (scanAll) {
           for (const tab of window.gBrowser.tabs) {
             if (!tab.closing && lazy.TreeTabsGroups.isGroupTab(tab)) {
