@@ -42,9 +42,17 @@ The regression cases live in
 and
 `waterfox/browser/components/tabbrowser/test/browser/browser_tree_tabs_basic.js`.
 
-They were run through Marionette in an isolated stock Waterfox 6.7.4 Linux
-release, first unchanged and then with the candidate `tabbrowser.js`
-substituted: https://github.com/skrblk/waterfox/actions/runs/36662579610.
-The workflow and its scripts are on the branch
-`investigation/tab-handoff-2026-09-30`. A full `mach` test run, a source
-build, Windows and macOS were not covered.
+The original Marionette check used an isolated Waterfox 6.7.4 Linux release,
+first unchanged and then with the candidate `tabbrowser.js` substituted:
+https://github.com/skrblk/waterfox/actions/runs/36662579610. Its workflow and
+scripts are on `investigation/tab-handoff-2026-09-30`.
+
+On 2026-10-17, the same approach against the official Waterfox 6.7.6 Linux
+release with the current fork modules passed all five successor tasks
+(49 assertions), plus the tree close-handoff, whole-tree window-policy and
+pinned-tab cases. These use a reduced browser-chrome adapter. The complete
+basic-tree file subsequently passed all 13 tasks and 58 assertions after
+the adapter's document-load and missing-helper support was corrected.
+The adapter uses top-level document polling rather than the full native
+mochitest load-event contract. A full `mach` test run, a source build,
+Windows and macOS remain outside this verification.
