@@ -63,6 +63,9 @@ changes as a patch series.
   closed-tree restore retains its dirty marker. These are defensive
   safeguards; production save loss from those interleavings was not
   reproduced.
+- **Creating a group leaves a selected folded group collapsed.** Internal
+  chrome pages are excluded from same-site auto-attachment, so a new
+  group is not briefly attached under the selected group.
 
 ## Building
 

@@ -229,3 +229,56 @@ add_task(async function test_explicit_subgroup_position_preserves_native_group()
     await SpecialPowers.popPrefEnv();
   }
 });
+
+add_task(
+  async function test_grouping_while_folded_group_is_selected_preserves_collapse() {
+    await enableTreeTabs();
+    const originalTabs = new Set(gBrowser.tabs);
+    Services.prefs.setIntPref(PREF_TREE_AUTO_ATTACH, 1);
+    try {
+      const firstMember = BrowserTestUtils.addTab(gBrowser, "about:blank");
+      const firstGroup = PlacementGroups.groupTabs(window, [firstMember], {
+        title: "Folded Group",
+        temporary: false,
+      });
+      await waitForTreeCondition(
+        () =>
+          firstGroup.linkedBrowser?.currentURI?.spec?.startsWith(
+            "chrome://browser/content/treegroup/group-tab.xhtml"
+          ),
+        "Waiting for the first group page URI to commit"
+      );
+      gBrowser.TreeTabsService.collapseSubtree(firstGroup);
+      ok(
+        gBrowser.TreeTabsService.isCollapsed(firstGroup),
+        "The first group starts collapsed"
+      );
+      await BrowserTestUtils.switchTab(gBrowser, firstGroup);
+
+      const secondMember = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+        relatedToCurrent: false,
+      });
+      const secondGroup = PlacementGroups.groupTabs(window, [secondMember], {
+        title: "Second Group",
+        temporary: false,
+      });
+
+      ok(
+        gBrowser.TreeTabsService.isCollapsed(firstGroup),
+        "Creating another group while a folded group is selected keeps the folded group collapsed"
+      );
+      is(
+        getTreeParent(secondGroup),
+        null,
+        "The second group stays an independent root"
+      );
+      is(
+        getTreeParent(secondMember),
+        secondGroup,
+        "The second group owns its member"
+      );
+    } finally {
+      await cleanupPlacementTabs(originalTabs);
+    }
+  }
+);

@@ -584,7 +584,7 @@ export const TreeTabsService = {
     if (!currentSpec || info.url === currentSpec) {
       return null;
     }
-    const siteMatcher = /^\w+:\/\/([^/]+)(?:$|\/)/;
+    const siteMatcher = /^(?!chrome:\/\/)\w+:\/\/([^/]+)(?:$|\/)/i;
     const newSite = info.url.match(siteMatcher);
     const currentSite = currentSpec.match(siteMatcher);
     if (!newSite || !currentSite || newSite[1] !== currentSite[1]) {
