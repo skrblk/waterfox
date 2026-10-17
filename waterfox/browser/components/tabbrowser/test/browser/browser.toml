@@ -59,6 +59,8 @@ tags = "vertical-tabs"
 
 ["browser_tree_tabs_drag_placement.js"]
 
+["browser_tree_tabs_group_lifecycle.js"]
+
 ["browser_tree_tabs_groups.js"]
 
 ["browser_tree_tabs_hidden.js"]
