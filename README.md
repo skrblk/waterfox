@@ -24,6 +24,14 @@ changes as a patch series.
   start padding instead of a reserved content slot, so a root tab no longer
   moves when it gains or loses children, and parents line up with leaves of
   the same level.
+- **Emptied group tabs close after a window restore.** With
+  `browser.tabs.verticalTabs.tree.closeParentBehavior` set to 4, a closed
+  parent is replaced by a group tab, and the group tab closes once it holds
+  one child or none. While a window was restoring (up to ten seconds after it
+  opens or is restored) that cleanup was skipped and its request dropped, so
+  group tabs emptied in that time, by a bulk close for example, stayed for
+  good, nested ones included. The request is now kept and run once the
+  restore ends.
 
 ## Building
 

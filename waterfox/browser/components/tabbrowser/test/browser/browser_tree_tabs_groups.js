@@ -136,6 +136,68 @@ add_task(async function test_close_parent_replaced_by_aggressive_group() {
   }
 });
 
+add_task(async function test_group_cleanup_waits_for_restore() {
+  const originalTabs = new Set(gBrowser.tabs);
+  await enableTreeTabs();
+  Services.prefs.setIntPref(PREF_TREE_CLOSE_PARENT_BEHAVIOR, 4);
+
+  try {
+    const outer = BrowserTestUtils.addTab(gBrowser, "about:blank", {
+      skipAnimation: true,
+      triggeringPrincipal: SYSTEM_PRINCIPAL,
+    });
+    const innerA = await openTabWithTree(outer);
+    const leavesA = [
+      await openTabWithTree(innerA),
+      await openTabWithTree(innerA),
+    ];
+    const innerB = await openTabWithTree(outer);
+    const leavesB = [
+      await openTabWithTree(innerB),
+      await openTabWithTree(innerB),
+    ];
+    const home = BrowserTestUtils.addTab(gBrowser, "about:blank");
+    await BrowserTestUtils.switchTab(gBrowser, home);
+
+    for (const [index, parent] of [innerA, innerB, outer].entries()) {
+      BrowserTestUtils.removeTab(parent, { isUserTriggered: true });
+      await waitForTreeCondition(
+        () =>
+          !gBrowser.tabs.includes(parent) &&
+          getTreeGroupTabs().length == index + 1,
+        "Waiting for the parent to be replaced by a group"
+      );
+    }
+    const groupTabs = getTreeGroupTabs();
+
+    // Closing the real tabs while the window restores used to drop the
+    // cleanup request, and the emptied group tabs stayed for good.
+    TreeTabsStore.ensureRestoreGuard(window);
+    const leaves = [...leavesA, ...leavesB];
+    gBrowser.removeTabs(leaves);
+    await waitForTreeCondition(
+      () => leaves.every(tab => !gBrowser.tabs.includes(tab)),
+      "Waiting for the real tabs to close"
+    );
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    is(
+      getTreeGroupTabs().length,
+      3,
+      "Group tabs are kept while the window restores"
+    );
+
+    TreeTabsStore.clearRestoreGuard(window);
+    await waitForTreeCondition(
+      () => groupTabs.every(tab => !gBrowser.tabs.includes(tab)),
+      "Waiting for the emptied group tabs to close after the restore"
+    );
+    ok(gBrowser.tabs.includes(home), "The unrelated tab stays open");
+  } finally {
+    TreeTabsStore.clearRestoreGuard(window);
+    await cleanupGroupTestTabs(originalTabs);
+  }
+});
+
 add_task(async function test_group_page_title_uses_chrome_url() {
   const originalTabs = new Set(gBrowser.tabs);
   await enableTreeTabs();
