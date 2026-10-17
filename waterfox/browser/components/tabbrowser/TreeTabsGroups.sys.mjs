@@ -333,7 +333,7 @@ export const TreeTabsGroups = {
           continue;
         }
       }
-      service.removeGroupTab(tab);
+      service.removeGroupTab(tab, { skipSessionStore: true });
     }
   },
 
