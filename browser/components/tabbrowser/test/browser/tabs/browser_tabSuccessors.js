@@ -247,3 +247,38 @@ add_task(async function test_close_with_firefox_view_fallback() {
     await BrowserTestUtils.closeWindow(win);
   }
 });
+
+add_task(async function test_close_does_not_select_pinned_tab_by_position() {
+  for (let loadedFarAway of [true, false]) {
+    let win = await BrowserTestUtils.openNewBrowserWindow();
+    try {
+      let gb = win.gBrowser;
+      let first = gb.selectedTab;
+      let pinned = BrowserTestUtils.addTab(gb, "about:blank");
+      gb.pinTab(pinned);
+      let before = BrowserTestUtils.addTab(gb, "about:blank");
+      let current = BrowserTestUtils.addTab(gb, "about:blank");
+      let after = BrowserTestUtils.addTab(gb, "about:blank");
+      let far = loadedFarAway
+        ? BrowserTestUtils.addTab(gb, "about:blank")
+        : null;
+      await BrowserTestUtils.switchTab(gb, current);
+      await gb.explicitUnloadTabs([first, before, after]);
+      await BrowserTestUtils.removeTab(current);
+      isnot(
+        gb.selectedTab,
+        pinned,
+        `${loadedFarAway ? "With" : "Without"} a loaded tab further on: a pinned tab is not selected by position`
+      );
+      if (far) {
+        is(gb.selectedTab, far, "The loaded unpinned tab is selected");
+      }
+      ok(
+        !before.linkedPanel && !after.linkedPanel,
+        "The unloaded neighbours stay unloaded"
+      );
+    } finally {
+      await BrowserTestUtils.closeWindow(win);
+    }
+  }
+});
