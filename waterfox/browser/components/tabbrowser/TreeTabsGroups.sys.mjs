@@ -272,8 +272,26 @@ export const TreeTabsGroups = {
     ) {
       return;
     }
-    const toRemove = [];
-    for (const tab of tabs.toSorted(
+    const candidates = new Set();
+    const pending = [...tabs];
+    while (pending.length) {
+      const tab = pending.pop();
+      if (
+        !tab ||
+        tab.closing ||
+        tab.documentGlobal != window ||
+        candidates.has(tab)
+      ) {
+        continue;
+      }
+      candidates.add(tab);
+      for (const child of service.getChildren(tab)) {
+        if (this.getTemporaryState(child)) {
+          pending.push(child);
+        }
+      }
+    }
+    for (const tab of Array.from(candidates).toSorted(
       (a, b) => service.getLevel(b) - service.getLevel(a)
     )) {
       if (!tab || tab.closing || tab.documentGlobal != window) {
@@ -283,9 +301,7 @@ export const TreeTabsGroups = {
       if (!temporaryState) {
         continue;
       }
-      const children = service
-        .getChildren(tab)
-        .filter(child => !toRemove.includes(child));
+      const children = service.getChildren(tab).filter(child => !child.closing);
       if (children.length > 1) {
         continue;
       }
@@ -298,12 +314,7 @@ export const TreeTabsGroups = {
           continue;
         }
       }
-      toRemove.push(tab);
-    }
-    for (const tab of toRemove) {
-      if (!tab.closing) {
-        service.removeGroupTab(tab);
-      }
+      service.removeGroupTab(tab);
     }
   },
 

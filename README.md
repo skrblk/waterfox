@@ -37,6 +37,10 @@ changes as a patch series.
 - **Tree exports preserve pending addresses.** Bookmarking a tree and copying
   its links use the pending session address, including a replaced pending
   state, without loading the tabs.
+- **Nested group cleanup preserves promoted children.** Redundant temporary
+  groups are removed deepest-first, and their parents count the children
+  that remain. Cleanup follows temporary child groups without entering
+  unrelated permanent groups.
 
 ## Building
 
