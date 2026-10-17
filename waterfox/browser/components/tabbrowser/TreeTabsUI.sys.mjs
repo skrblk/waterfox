@@ -3951,7 +3951,7 @@ function createTreeTabsController(window) {
         const plainLines = [];
         const richLinks = [];
         for (const paneTab of paneTabs) {
-          const url = paneTab.linkedBrowser?.currentURI?.spec || "";
+          const url = lazy.TreeTabsGroups.getTabURL(paneTab);
           plainLines.push(`* ${url}`);
           richLinks.push(
             `<a href="${escapeForHTML(url)}">${escapeForHTML(paneTab.label)}</a>`

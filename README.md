@@ -34,6 +34,10 @@ changes as a patch series.
   finishing its restore, such as an unloaded tab being selected, or tree tabs
   being turned on. The request is now kept and run once the restore ends.
 
+- **Tree exports preserve pending addresses.** Bookmarking a tree and copying
+  its links use the pending session address, including a replaced pending
+  state, without loading the tabs.
+
 ## Building
 
 Waterfox uses the Mozilla build system. The usual `./mach` entry points apply:
