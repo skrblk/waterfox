@@ -49,6 +49,9 @@ changes as a patch series.
   up. An unresolved saved snapshot remains protected.
 - **Pinned-opener groups retain their position.** Opening related tabs after
   switching tabs appends them after the existing subtree.
+- **Group replacements preserve their tree and strip position.** Root groups
+  replace the original root slot after pinned tabs. Subgroups preserve
+  their first member's slot unless an explicit position is supplied.
 
 ## Building
 

@@ -187,7 +187,24 @@ export const TreeTabsGroups = {
       options.parent !== undefined
         ? options.parent
         : service.getParent(rootTabs[0]);
-    const rootIndex = service.getRootTabs(window).indexOf(rootTabs[0]);
+    const roots = service.getRootTabs(window);
+    let rootIndex = roots.indexOf(options.insertBefore);
+    if (rootIndex < 0 && roots.includes(options.insertAfter)) {
+      rootIndex = roots.indexOf(options.insertAfter) + 1;
+    }
+    if (rootIndex < 0 && Number.isFinite(options.siblingIndex)) {
+      rootIndex = options.siblingIndex;
+    }
+    if (rootIndex < 0) {
+      rootIndex = roots.indexOf(rootTabs[0]);
+    }
+    if (rootIndex < 0) {
+      rootIndex = roots.findIndex(tab => tab._tPos > rootTabs[0]._tPos);
+    }
+    if (rootIndex < 0) {
+      rootIndex = roots.length;
+    }
+    rootIndex = Math.max(rootIndex, roots.filter(tab => tab.pinned).length);
 
     const nativeGroup = rootTabs.every(tab => tab.group == rootTabs[0].group)
       ? rootTabs[0].group
@@ -203,16 +220,18 @@ export const TreeTabsGroups = {
 
     if (parent && !parent.closing) {
       service.attachTab(groupTab, parent, {
-        insertBefore: options.insertBefore,
+        insertBefore:
+          options.insertBefore ||
+          (!options.insertAfter && !Number.isFinite(options.siblingIndex)
+            ? rootTabs[0]
+            : null),
         insertAfter: options.insertAfter,
         index: options.siblingIndex,
         suppressAutoExpand: true,
       });
     } else {
       service.detachTab(groupTab);
-      if (rootIndex >= 0) {
-        service.moveTabSubtree(groupTab, rootIndex);
-      }
+      service.moveTabSubtree(groupTab, rootIndex);
     }
 
     let previousRoot = null;
