@@ -34,6 +34,37 @@ async function cleanupLifecycleTestTabs(originalTabs) {
   clearTreeTestPrefs();
 }
 
+add_task(async function test_group_uri_is_available_before_document_load() {
+  await enableTreeTabs();
+  const originalTabs = new Set(gBrowser.tabs);
+  try {
+    const first = BrowserTestUtils.addTab(gBrowser, "about:blank");
+    const second = BrowserTestUtils.addTab(gBrowser, "about:blank");
+    const group = LifecycleGroups.groupTabs(window, [first, second], {
+      temporaryAggressive: true,
+      title: "Pending group",
+    });
+    info(JSON.stringify({
+      current: group.linkedBrowser.currentURI.spec,
+      typed: group.linkedBrowser.userTypedValue,
+    }));
+    ok(LifecycleGroups.isGroupTab(group), "A new group is recognized immediately");
+    is(
+      LifecycleGroups.getTemporaryState(group),
+      2,
+      "Cleanup recognizes the temporary state before the document loads"
+    );
+  } finally {
+    await disableTreeTabs({ strict: false });
+    for (const tab of Array.from(gBrowser.tabs).reverse()) {
+      if (!originalTabs.has(tab)) {
+        await BrowserTestUtils.removeTab(tab);
+      }
+    }
+    clearTreeTestPrefs();
+  }
+});
+
 add_task(async function test_cleanup_counts_promoted_children() {
   await enableTreeTabs();
   const originalTabs = new Set(gBrowser.tabs);

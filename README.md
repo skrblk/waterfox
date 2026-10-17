@@ -66,6 +66,11 @@ changes as a patch series.
 - **Creating a group leaves a selected folded group collapsed.** Internal
   chrome pages are excluded from same-site auto-attachment, so a new
   group is not briefly attached under the selected group.
+- **Initial requests identify pending tabs without accepting drafts.** New
+  group tabs are recognized before their documents load. Tree bookmarks
+  and copied links retain an uncommitted first navigation through
+  immediate discard, while unsubmitted address-bar drafts do not replace
+  the page or pending navigation address.
 
 ## Building
 

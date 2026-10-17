@@ -274,3 +274,54 @@ add_task(function test_clear_temporary_state_uses_uri_update() {
   Assert.equal(params.get("openerGuid"), "opener-guid", "Preserves opener");
   Assert.equal(params.get("aliasGuid"), "alias-guid", "Preserves alias");
 });
+
+add_task(function test_get_tab_url_handles_uncommitted_navigations() {
+  const uncommittedTab = {
+    linkedBrowser: {
+      currentURI: { spec: "about:blank" },
+      userTypedValue: "https://example.com/loading-target",
+      browsingContext: {
+        sessionHistory: { count: 0 },
+        mostRecentLoadingSessionHistoryEntry: {
+          URI: { spec: "https://example.com/loading-target" },
+        },
+      },
+    },
+  };
+  Assert.equal(
+    TreeTabsGroups.getTabURL(uncommittedTab),
+    "https://example.com/loading-target",
+    "Returns the initial navigation target while the browser is still on about:blank"
+  );
+
+  const committedTab = {
+    linkedBrowser: {
+      currentURI: { spec: "https://example.com/committed" },
+      userTypedValue: "https://example.com/typed-draft",
+    },
+  };
+  Assert.equal(
+    TreeTabsGroups.getTabURL(committedTab),
+    "https://example.com/committed",
+    "Prefers the committed currentURI over userTypedValue once loaded"
+  );
+});
+
+add_task(function test_get_tab_url_ignores_unsent_drafts() {
+  const tab = {
+    linkedBrowser: {
+      currentURI: { spec: "about:blank" },
+      userTypedValue: "https://example.com/unsent",
+      browsingContext: { sessionHistory: { count: 0 } },
+    },
+  };
+  Assert.equal(TreeTabsGroups.getTabURL(tab), "about:blank", "An unsent URL is not a navigation");
+  tab.linkedBrowser.userTypedValue = "unsubmitted search words";
+  Assert.equal(TreeTabsGroups.getTabURL(tab), "about:blank", "Search text is not a navigation");
+  tab.linkedBrowser.userTypedValue = GROUP_TAB_URL;
+  Assert.ok(!TreeTabsGroups.isGroupTab(tab), "Typing a group URI does not create a group");
+  tab.linkedBrowser.browsingContext.mostRecentLoadingSessionHistoryEntry = {
+    URI: { spec: "https://example.com/submitted" },
+  };
+  Assert.equal(TreeTabsGroups.getTabURL(tab), "https://example.com/submitted", "A later draft cannot replace the submitted target");
+});
