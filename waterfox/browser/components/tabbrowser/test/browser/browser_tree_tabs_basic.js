@@ -595,3 +595,54 @@ add_task(async function test_root_tabs_share_one_icon_column() {
     }
   }
 });
+
+add_task(async function test_close_child_does_not_select_pinned_tab() {
+  await enableTreeTabs();
+  let originalTabs = new Set(gBrowser.tabs);
+  // The tree's own search walks back over the strip, so a pinned tab is
+  // reached before a loaded tab that comes after the closing tab's tree.
+  for (let loadedAfter of [true, false]) {
+    let pinned = BrowserTestUtils.addTab(gBrowser, "about:blank");
+    gBrowser.pinTab(pinned);
+    let parent = BrowserTestUtils.addTab(gBrowser, "about:blank");
+    let unloaded = await openTabWithTree(parent);
+    let child = await openTabWithTree(parent);
+    let after = loadedAfter
+      ? BrowserTestUtils.addTab(gBrowser, "about:blank")
+      : null;
+    let others = gBrowser.tabs.filter(
+      tab => !tab.pinned && ![parent, unloaded, child, after].includes(tab)
+    );
+    try {
+      await BrowserTestUtils.switchTab(gBrowser, child);
+      await gBrowser.explicitUnloadTabs([parent, unloaded, ...others]);
+      await BrowserTestUtils.removeTab(child);
+      isnot(
+        gBrowser.selectedTab,
+        pinned,
+        `${loadedAfter ? "With" : "Without"} a loaded tab after the tree: a pinned tab is not selected by position`
+      );
+      if (after) {
+        is(
+          gBrowser.selectedTab,
+          after,
+          "The loaded tab after the tree is selected"
+        );
+      }
+      ok(!unloaded.linkedPanel, "The unloaded sibling stays unloaded");
+    } finally {
+      // The close may have opened Firefox View or a new tab; leave only the
+      // tabs the task started with, selected and loaded again.
+      await BrowserTestUtils.switchTab(
+        gBrowser,
+        gBrowser.tabs.find(tab => originalTabs.has(tab) && !tab.hidden)
+      );
+      for (let tab of gBrowser.tabs.filter(t => !originalTabs.has(t))) {
+        if (tab.pinned) {
+          gBrowser.unpinTab(tab);
+        }
+        await BrowserTestUtils.removeTab(tab);
+      }
+    }
+  }
+});

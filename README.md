@@ -17,7 +17,8 @@ changes as a patch series.
 
 - **Closing a tab does not restore unloaded tabs.** When the selected tab
   closes, the next tab is chosen among loaded tabs only. When none is left,
-  Firefox View or a new tab opens, as explicit unloading already did. Details:
+  Firefox View or a new tab opens, as explicit unloading already did. A pinned
+  tab is never chosen by position when an unpinned tab closes. Details:
   [waterfox/docs/tab-close-policy.md](waterfox/docs/tab-close-policy.md).
 - **Tree tabs line up by level.** The disclosure chevron sits in the row's
   start padding instead of a reserved content slot, so a root tab no longer

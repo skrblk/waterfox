@@ -6407,6 +6407,16 @@
         return aTab.owner;
       }
 
+      // Pinned tabs sit apart from the rest. Leaving an unpinned tab does not
+      // select one by position; a pinned successor or owner still counts.
+      if (!aTab.pinned) {
+        for (let tab of this.tabContainer.allTabs) {
+          if (tab.pinned) {
+            excludeTabs.add(tab);
+          }
+        }
+      }
+
       if (this.TreeTabsService.enabled) {
         const treeSuccessor = this.TreeTabsService.getSuccessor(
           aTab,

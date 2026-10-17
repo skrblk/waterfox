@@ -10,6 +10,10 @@ and successor selection. Among the remaining loaded tabs the existing
 priorities (explicit successor, owner, tree, position) are unchanged.
 Selecting an unloaded tab on purpose still restores it.
 
+Pinned tabs sit apart from the rest: leaving an unpinned tab never selects a
+pinned tab by position, through the tree or the strip order. A pinned explicit
+successor or owner still counts.
+
 When no loaded tab remains, the close handoff uses the same fallback as
 explicit unloading: Firefox View when its tab is open or its button is
 visible, otherwise a new tab. No fallback is created when the closing tab is
@@ -25,6 +29,7 @@ because the tree close set is passed into the handoff.
 | Exclude inside the finder | Filtering only adjacency would miss unloaded explicit successors, owners and tree candidates; one place serves every caller. |
 | Reuse explicit unloading's fallback | One fallback for both operations. The new-tab page replaces the inert `about:blank` used by an earlier version of this change. |
 | Pass the tree close set | Distinguishes unloaded survivors from descendants about to close without duplicating close-policy rules. |
+| Leave pinned tabs out of the positional search | Pinned tabs are always loaded, so with unloaded neighbours the search otherwise ends at the top of the strip, far from the tab being closed. |
 | Keep prewarming side-effect free | Prewarming may run before a close is permitted; only the handoff selects or opens a tab. |
 
 An unloaded successor nominated by an extension is skipped on close as well;
