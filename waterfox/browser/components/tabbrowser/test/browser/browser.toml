@@ -57,6 +57,8 @@ tags = "vertical-tabs"
 
 ["browser_tree_tabs_dblclick.js"]
 
+["browser_tree_tabs_disclosure_buttons.js"]
+
 ["browser_tree_tabs_drag_placement.js"]
 
 ["browser_tree_tabs_group_lifecycle.js"]

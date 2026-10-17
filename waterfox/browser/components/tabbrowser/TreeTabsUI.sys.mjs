@@ -2980,7 +2980,7 @@ function createTreeTabsController(window) {
         !this._isEnabled() ||
         !this._tabContainer?.verticalMode ||
         !this._tabContainer.hasAttribute("expanded") ||
-        event?.button != 0
+        (event?.button != 0 && event?.button != 1)
       ) {
         return null;
       }
@@ -3013,6 +3013,9 @@ function createTreeTabsController(window) {
 
       event.preventDefault();
       event.stopPropagation();
+      if (event.button != 0) {
+        return;
+      }
       this._withAutoCollapseSuppressed(() => {
         const expand = lazy.TreeTabsService.isCollapsed(tab);
         lazy.TreeTabsService.toggleCollapsed(tab);

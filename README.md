@@ -41,6 +41,9 @@ changes as a patch series.
   groups are removed deepest-first, and their parents count the children
   that remain. Cleanup follows temporary child groups without entering
   unrelated permanent groups.
+- **Middle-clicking the tree disclosure keeps the tab open.** Primary clicks
+  still collapse or expand the tree, and middle-clicking the ordinary row
+  still closes the tab.
 
 ## Building
 
