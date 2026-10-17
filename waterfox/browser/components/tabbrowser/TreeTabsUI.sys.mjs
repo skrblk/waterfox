@@ -1043,6 +1043,7 @@ function createTreeTabsController(window) {
       this._tabContainer.addEventListener("SSTabRestored", this);
       this._tabContainer.addEventListener("mousedown", this, true);
       this._tabContainer.addEventListener("click", this, true);
+      this._tabContainer.addEventListener("contextmenu", this);
       this._tabContainer.addEventListener("dblclick", this, true);
       this._tabContainer.addEventListener("dblclick", this);
       this._tabContainer.addEventListener("keydown", this);
@@ -1135,6 +1136,7 @@ function createTreeTabsController(window) {
       this._tabContainer?.removeEventListener("SSTabRestored", this);
       this._tabContainer?.removeEventListener("mousedown", this, true);
       this._tabContainer?.removeEventListener("click", this, true);
+      this._tabContainer?.removeEventListener("contextmenu", this);
       this._tabContainer?.removeEventListener("dblclick", this, true);
       this._tabContainer?.removeEventListener("dblclick", this);
       this._tabContainer?.removeEventListener("keydown", this);
@@ -1547,6 +1549,9 @@ function createTreeTabsController(window) {
             return;
           }
           this._handleTabTwistyClick(event);
+          break;
+        case "contextmenu":
+          this._handleTabTwistyContextMenu(event);
           break;
         case "dblclick":
           if (event.eventPhase == Event.CAPTURING_PHASE) {
@@ -3021,6 +3026,22 @@ function createTreeTabsController(window) {
         lazy.TreeTabsService.toggleCollapsed(tab);
         this._setManuallyExpanded(tab, expand);
       });
+    },
+
+    _handleTabTwistyContextMenu(event) {
+      if (
+        !this._isEnabled() ||
+        !this._tabContainer?.verticalMode ||
+        !event.target?.closest?.(".tab-tree-disclosure")
+      ) {
+        return;
+      }
+      // .tab-tree-disclosure is a direct child of <tab>, so in vertical tabs its
+      // two-hop flattenedTreeParentNode is the <slot> inside #tabbrowser-arrowscrollbox's
+      // shadow root rather than an element under #vertical-tabs. Stop default-group
+      // bubbling at #tabbrowser-tabs so #sidebar-container's onSidebarPopupShowing
+      // does not call preventDefault() before <tab>'s system-group popup listener runs.
+      event.stopPropagation();
     },
 
     _closeTreeTabs(tab) {

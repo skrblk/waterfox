@@ -55,6 +55,9 @@ changes as a patch series.
 - **Automatic group cleanup leaves undo history alone.** Removing redundant
   temporary groups does not add closed-tab entries. Deliberate group
   closes remain undoable.
+- **The disclosure context menu opens on its first use.** Right-clicking
+  a tree disclosure opens that tab's native context menu before any row
+  context menu has been opened, and after the sidebar target is reset.
 
 ## Building
 
