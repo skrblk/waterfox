@@ -51,7 +51,7 @@ export const TreeTabsBookmarks = {
       return {
         tab,
         title,
-        url: tab.linkedBrowser.currentURI.spec,
+        url: lazy.TreeTabsGroups.getTabURL(tab),
       };
     });
   },

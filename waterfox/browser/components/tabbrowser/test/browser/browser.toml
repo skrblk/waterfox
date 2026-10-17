@@ -67,6 +67,8 @@ tags = "vertical-tabs"
 
 ["browser_tree_tabs_keyboard.js"]
 
+["browser_tree_tabs_lazy_urls.js"]
+
 ["browser_tree_tabs_moves.js"]
 
 ["browser_tree_tabs_mute.js"]
