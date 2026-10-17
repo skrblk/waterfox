@@ -47,6 +47,8 @@ changes as a patch series.
 - **Tree edits made during the restore guard are saved afterward.** Once all
   restore blockers clear, both window structure and per-tab metadata catch
   up. An unresolved saved snapshot remains protected.
+- **Pinned-opener groups retain their position.** Opening related tabs after
+  switching tabs appends them after the existing subtree.
 
 ## Building
 
