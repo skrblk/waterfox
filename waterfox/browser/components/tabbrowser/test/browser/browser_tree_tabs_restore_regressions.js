@@ -229,3 +229,56 @@ add_task(async function test_window_teardown_discards_guard_catchup() {
     );
   });
 });
+
+add_task(async function test_on_window_restored_preserves_catchup_save() {
+  await withGuardTreeFixture(async ({ win, parent, child }) => {
+    const extra = win.gBrowser.addTrustedTab("about:blank", {
+      skipAnimation: true,
+    });
+    const parentGuid = GuardTreeStore.getTabGuid(parent);
+    const childGuid = GuardTreeStore.getTabGuid(child);
+    GuardSessionStore.setCustomWindowValue(
+      win,
+      "treeTabs:tree-structure",
+      JSON.stringify([
+        { id: parentGuid, parent: null, collapsed: false },
+        { id: childGuid, parent: 0, collapsed: false },
+      ])
+    );
+    GuardTreeStore.onWindowRestoring(win);
+    GuardTreeStore.ensureRestoreGuard(win);
+    GuardTreeService.attachTab(extra, parent);
+    GuardTreeStore.onWindowRestored(win);
+    await waitForGuardSave(win);
+    const structure = JSON.parse(
+      GuardSessionStore.getCustomWindowValue(win, "treeTabs:tree-structure")
+    );
+    is(
+      structure.length,
+      win.gBrowser.tabs.length,
+      "onWindowRestored does not cancel the catch-up save scheduled by tryManualRestore"
+    );
+  });
+});
+
+add_task(async function test_prequeued_save_survives_closed_tree_restore() {
+  await withGuardTreeFixture(async ({ win, parent, child }) => {
+    GuardTreeService.attachTab(child, parent);
+    ok(GuardTreeStore._pendingSaves.has(win), "The live edit queues a save");
+    GuardTreeStore._restoringClosedTreeSets.add(win);
+    await TestUtils.waitForCondition(
+      () => !GuardTreeStore._pendingSaves.has(win),
+      "The queued save encounters the closed-tree restore guard"
+    );
+    GuardTreeStore._restoringClosedTreeSets.delete(win);
+    GuardTreeStore._scheduleRestoreCatchUp(win);
+    await waitForGuardSave(win);
+    is(
+      JSON.parse(
+        GuardSessionStore.getCustomTabValue(child, "treeTabs:ancestors")
+      )[0]?.uniqueId,
+      GuardTreeStore.getTabGuid(parent),
+      "A save blocked by a closed-tree restore catches up once that restore finishes"
+    );
+  });
+});
