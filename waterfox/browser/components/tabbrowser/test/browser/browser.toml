@@ -85,6 +85,8 @@ tags = "vertical-tabs"
 
 ["browser_tree_tabs_restore.js"]
 
+["browser_tree_tabs_restore_regressions.js"]
+
 ["browser_tree_tabs_restore_work.js"]
 
 ["browser_tree_tabs_split_view.js"]

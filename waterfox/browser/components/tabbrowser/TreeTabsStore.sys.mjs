@@ -85,6 +85,7 @@ export const TreeTabsStore = {
   _initialized: false,
   _wiredWindows: new WeakSet(),
   _restoringWindows: new Map(),
+  _dirtyRestoreWindows: new WeakSet(),
   _sessionRestoringWindows: new WeakSet(),
   _pendingWindowRestores: new WeakSet(),
   _manualRestoreCompleted: new WeakSet(),
@@ -143,6 +144,7 @@ export const TreeTabsStore = {
     this._tabGuids = new WeakMap();
     this._wiredWindows = new WeakSet();
     this._restoringWindows.clear();
+    this._dirtyRestoreWindows = new WeakSet();
     this._sessionRestoringWindows = new WeakSet();
     this._pendingWindowRestores = new WeakSet();
     this._manualRestoreCompleted = new WeakSet();
@@ -181,6 +183,7 @@ export const TreeTabsStore = {
     for (const type of TAB_GUID_EVENTS) {
       window.removeEventListener(type, this);
     }
+    this._dirtyRestoreWindows.delete(window);
     this._cancelWindowSave(window);
     this.clearRestoreGuard(window);
     this.cancelClosedTreeSet(window);
@@ -272,6 +275,9 @@ export const TreeTabsStore = {
       this.isRestorePending(window) ||
       this._restoringClosedTreeSets.has(window)
     ) {
+      if (this._restoringWindows.has(window)) {
+        this._dirtyRestoreWindows.add(window);
+      }
       return;
     }
 
@@ -384,8 +390,8 @@ export const TreeTabsStore = {
       return;
     }
     this.ensureUniqueTabGuids(window);
-    this._cancelWindowSave(window);
     this.clearRestoreGuard(window);
+    this._cancelWindowSave(window);
     this._manualRestoreCompleted.add(window);
     this._pendingWindowRestores.delete(window);
     for (const tab of this._getWindowTabs(window)) {
@@ -394,6 +400,13 @@ export const TreeTabsStore = {
       }
     }
     this.saveWindowStructure(window);
+    if (
+      this._isEnabled() &&
+      !this.isRestorePending(window) &&
+      !this._restoringClosedTreeSets.has(window)
+    ) {
+      this._dirtyRestoreWindows.delete(window);
+    }
   },
 
   hasActiveClosedTreeSet(window) {
@@ -1031,6 +1044,7 @@ export const TreeTabsStore = {
         this._deleteTabJSON(tab, CLOSED_TREE_SET_ID_KEY);
       }
     }
+    this._scheduleRestoreCatchUp(window);
   },
 
   _restoreClosedTreeSet(window, restore) {
@@ -1149,6 +1163,7 @@ export const TreeTabsStore = {
           }
         }
         this.saveWindowStructure(window);
+        this._scheduleRestoreCatchUp(window);
       }
     }
   },
@@ -1516,6 +1531,23 @@ export const TreeTabsStore = {
       clearTimeout(timeoutId);
       this._restoringWindows.delete(window);
     }
+    this._scheduleRestoreCatchUp(window);
+  },
+
+  _scheduleRestoreCatchUp(window) {
+    if (
+      !this._dirtyRestoreWindows.has(window) ||
+      !this._wiredWindows.has(window) ||
+      window.closed ||
+      !this._isEnabled() ||
+      this.isRestorePending(window) ||
+      this._restoringClosedTreeSets.has(window)
+    ) {
+      return;
+    }
+    this._dirtyRestoreWindows.delete(window);
+    this._getPendingSave(window, { create: true }).fullWindowSave = true;
+    this._scheduleWindowSave(window);
   },
 
   _getPendingSave(window, { create = false } = {}) {
@@ -1559,6 +1591,9 @@ export const TreeTabsStore = {
       this.isRestorePending(window) ||
       this._restoringClosedTreeSets.has(window)
     ) {
+      if (this._restoringWindows.has(window)) {
+        this._dirtyRestoreWindows.add(window);
+      }
       this._pendingSaves.delete(window);
       return;
     }
