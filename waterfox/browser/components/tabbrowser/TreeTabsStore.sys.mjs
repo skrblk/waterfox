@@ -1251,9 +1251,9 @@ export const TreeTabsStore = {
     }
     this._pendingWindowRestores.add(window);
     this._manualRestoreCompleted.delete(window);
+    this._cancelWindowSave(window);
     // Lazy background tabs do not send SSTabRestoring until activation.
     this.tryManualRestore(window);
-    this._cancelWindowSave(window);
     this._windowStates.delete(window);
     lazy.TreeTabsService._notifyStructureChanged(window);
   },
@@ -1591,7 +1591,10 @@ export const TreeTabsStore = {
       this.isRestorePending(window) ||
       this._restoringClosedTreeSets.has(window)
     ) {
-      if (this._restoringWindows.has(window)) {
+      if (
+        this._restoringWindows.has(window) ||
+        this._restoringClosedTreeSets.has(window)
+      ) {
         this._dirtyRestoreWindows.add(window);
       }
       this._pendingSaves.delete(window);

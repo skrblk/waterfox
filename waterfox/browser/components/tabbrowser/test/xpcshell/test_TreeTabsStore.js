@@ -3671,3 +3671,75 @@ add_task(function test_partial_closed_set_restore_clears_consumed_set_id() {
     "The partial restore transaction is finished"
   );
 });
+
+add_task(function test_on_window_restored_and_closed_set_preserve_catchup_save() {
+  const mockStore = setupStore();
+  const window = createMockWindow();
+  window.addEventListener = () => {};
+  window.removeEventListener = () => {};
+  TreeTabsStore.initWindow(window);
+  try {
+    const parent = createStoredTab(mockStore, window, "catchup-parent");
+    const child = createStoredTab(mockStore, window, "catchup-child");
+    const extra = createStoredTab(mockStore, window, "catchup-extra");
+    putWindowJSON(mockStore, window, "tree-structure", [
+      { id: "catchup-parent", parent: null, collapsed: false },
+      { id: "catchup-child", parent: 0, collapsed: false },
+    ]);
+
+    TreeTabsStore.onWindowRestoring(window);
+    TreeTabsStore.ensureRestoreGuard(window);
+    Assert.ok(TreeTabsService.attachTab(extra, parent));
+    TreeTabsStore.onTreeEvent("tree-tabs-attached", {
+      window,
+      tab: extra,
+      parent,
+    });
+    Assert.ok(
+      TreeTabsStore._dirtyRestoreWindows.has(window),
+      "Live edit during guarded restore marks the window dirty"
+    );
+    TreeTabsStore.onWindowRestored(window);
+    const pendingAfterRestore = TreeTabsStore._pendingSaves.get(window);
+    Assert.ok(
+      pendingAfterRestore?.fullWindowSave,
+      "onWindowRestored preserves the catch-up save scheduled by tryManualRestore"
+    );
+    clearTimeout(pendingAfterRestore.timerId);
+    TreeTabsStore._flushWindowSave(window);
+    Assert.equal(
+      getWindowJSON(mockStore, window, "tree-structure").length,
+      3,
+      "The preserved catch-up save persists all three tabs"
+    );
+
+    TreeTabsService.detachTab(extra);
+    TreeTabsStore.onTreeEvent("tree-tabs-detached", {
+      window,
+      tab: extra,
+      previousParent: parent,
+    });
+    const queued = TreeTabsStore._pendingSaves.get(window);
+    Assert.ok(queued, "Detaching queues a save");
+    clearTimeout(queued.timerId);
+    TreeTabsStore._restoringClosedTreeSets.add(window);
+    TreeTabsStore._flushWindowSave(window);
+    Assert.ok(
+      TreeTabsStore._dirtyRestoreWindows.has(window),
+      "A pre-queued save blocked by a closed-tree restore marks the window dirty"
+    );
+    TreeTabsStore._restoringClosedTreeSets.delete(window);
+    TreeTabsStore._scheduleRestoreCatchUp(window);
+    const catchup = TreeTabsStore._pendingSaves.get(window);
+    Assert.ok(catchup?.fullWindowSave, "Closed-tree restore completion queues catch-up");
+    clearTimeout(catchup.timerId);
+    TreeTabsStore._flushWindowSave(window);
+    Assert.deepEqual(
+      getTabJSON(mockStore, extra, "ancestors"),
+      [],
+      "The catch-up save after closed-tree restore persists the detached state"
+    );
+  } finally {
+    TreeTabsStore.uninitWindow(window);
+  }
+});

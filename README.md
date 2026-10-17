@@ -58,6 +58,11 @@ changes as a patch series.
 - **The disclosure context menu opens on its first use.** Right-clicking
   a tree disclosure opens that tab's native context menu before any row
   context menu has been opened, and after the sidebar target is reset.
+- **Restore transitions retain catch-up bookkeeping.** Stale saves are
+  canceled before manual restoration, and a queued save blocked by a
+  closed-tree restore retains its dirty marker. These are defensive
+  safeguards; production save loss from those interleavings was not
+  reproduced.
 
 ## Building
 
