@@ -58,18 +58,30 @@ export const TreeTabsGroups = {
       if (url && url != "about:blank") {
         return url;
       }
-      return lazy.SessionStore.getLazyTabValue(tab, "userTypedValue") || url;
+      return (
+        lazy.SessionStore.getLazyTabValue(tab, "initialPendingURL") ||
+        (lazy.SessionStore.getLazyTabValue(tab, "userTypedClear")
+          ? lazy.SessionStore.getLazyTabValue(tab, "userTypedValue") || url
+          : url)
+      );
     } catch {
       return undefined;
     }
   },
 
   getTabURL(tab) {
-    const lazyURL = this._getLazyTabURL(tab);
-    if (lazyURL) {
-      return lazyURL;
+    const browser = tab?.linkedBrowser;
+    const url = this._getLazyTabURL(tab) || browser?.currentURI?.spec || "";
+    if (
+      url == "about:blank" &&
+      browser?.browsingContext?.sessionHistory?.count === 0
+    ) {
+      return (
+        browser?.browsingContext?.mostRecentLoadingSessionHistoryEntry?.URI
+          ?.spec || url
+      );
     }
-    return tab?.linkedBrowser?.currentURI?.spec || "";
+    return url;
   },
 
   isGroupTab(tab) {

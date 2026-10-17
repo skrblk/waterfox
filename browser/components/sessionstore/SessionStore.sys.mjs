@@ -3569,6 +3569,13 @@ var SessionStoreInternal = {
       return;
     }
 
+    // Keep the initial requested page separate from an unsubmitted URL-bar edit.
+    let initialPendingURL =
+      browser.currentURI.spec == "about:blank" &&
+      browser.browsingContext?.sessionHistory?.count === 0
+        ? browser.browsingContext.mostRecentLoadingSessionHistoryEntry?.URI?.spec
+        : null;
+
     this.cleanUpRemovedBrowser(aTab);
 
     aTab.setAttribute("pending", "true");
@@ -3614,6 +3621,7 @@ var SessionStoreInternal = {
     TAB_LAZY_STATES.set(aTab, {
       url: browser.currentURI.spec,
       title: aTab.label,
+      initialPendingURL,
       userTypedValue,
       userTypedClear,
     });
