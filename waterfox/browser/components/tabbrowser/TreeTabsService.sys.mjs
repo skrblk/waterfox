@@ -965,7 +965,7 @@ export const TreeTabsService = {
     this._notifyStructureChanged(window);
   },
 
-  removeGroupTab(tab) {
+  removeGroupTab(tab, { skipSessionStore = false } = {}) {
     if (!this._isEnabled() || !lazy.TreeTabsGroups.isGroupTab(tab)) {
       return false;
     }
@@ -977,7 +977,7 @@ export const TreeTabsService = {
     this._promoteAllChildren(state, tab);
     this._removeNode(state, tab);
     this._notifyStructureChanged(window);
-    window.gBrowser.removeTab(tab);
+    window.gBrowser.removeTab(tab, { skipSessionStore });
     return true;
   },
 

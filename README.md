@@ -52,6 +52,9 @@ changes as a patch series.
 - **Group replacements preserve their tree and strip position.** Root groups
   replace the original root slot after pinned tabs. Subgroups preserve
   their first member's slot unless an explicit position is supplied.
+- **Automatic group cleanup leaves undo history alone.** Removing redundant
+  temporary groups does not add closed-tab entries. Deliberate group
+  closes remain undoable.
 
 ## Building
 
