@@ -190,6 +190,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   SessionCookies: "resource:///modules/sessionstore/SessionCookies.sys.mjs",
   SessionFile: "resource:///modules/sessionstore/SessionFile.sys.mjs",
   SessionHistory: "resource://gre/modules/sessionstore/SessionHistory.sys.mjs",
+  HistoryTree: "resource://gre/modules/sessionstore/HistoryTree.sys.mjs",
   SessionSaver: "resource:///modules/sessionstore/SessionSaver.sys.mjs",
   SessionStartup: "resource:///modules/sessionstore/SessionStartup.sys.mjs",
   SessionStoreHelper:
@@ -3576,7 +3577,8 @@ var SessionStoreInternal = {
     let initialPendingURL =
       browser.currentURI.spec == "about:blank" &&
       browser.browsingContext?.sessionHistory?.count === 0
-        ? browser.browsingContext.mostRecentLoadingSessionHistoryEntry?.URI?.spec
+        ? browser.browsingContext.mostRecentLoadingSessionHistoryEntry?.URI
+            ?.spec
         : null;
 
     this.cleanUpRemovedBrowser(aTab);
@@ -4187,7 +4189,7 @@ var SessionStoreInternal = {
     aTab,
     aDelta = 0,
     aRestoreImmediately = true,
-    { inBackground, tabIndex } = {}
+    { inBackground, tabIndex, historyNodeId } = {}
   ) {
     if (!aTab || !aTab.documentGlobal) {
       throw Components.Exception("Need a valid tab", Cr.NS_ERROR_INVALID_ARG);
@@ -4257,7 +4259,38 @@ var SessionStoreInternal = {
       let options = { includePrivateData: true };
       lazy.TabState.copyFromCache(browser.permanentKey, tabState, options);
 
-      tabState.index += aDelta;
+      const hasTree =
+        Services.prefs.getBoolPref("browser.sessionhistory.preserve_entries") &&
+        Services.prefs.getBoolPref("browser.sessionhistory.tree_enabled") &&
+        lazy.HistoryTree.valid(tabState.historyTree, tabState.entries);
+      if (historyNodeId && !hasTree) {
+        window.gBrowser.removeTab(newTab, { animate: false });
+        return;
+      }
+      if (hasTree) {
+        const path = lazy.HistoryTree.path(
+          tabState.historyTree,
+          tabState.index - 1
+        );
+        const position = Math.max(
+          0,
+          Math.min(path.length - 1, path.indexOf(tabState.index - 1) + aDelta)
+        );
+        const target = historyNodeId
+          ? tabState.historyTree.ids.indexOf(historyNodeId)
+          : path[position];
+        if (target < 0 || target === undefined) {
+          window.gBrowser.removeTab(newTab, { animate: false });
+          return;
+        }
+        tabState.index = target + 1;
+        tabState.historyTree = lazy.HistoryTree.select(
+          tabState.historyTree,
+          target
+        );
+      } else {
+        tabState.index += aDelta;
+      }
       tabState.index = Math.max(
         1,
         Math.min(tabState.index, tabState.entries.length)
@@ -5521,7 +5554,11 @@ var SessionStoreInternal = {
     // Don't continue if the tab was closed before TabStateFlusher.flush resolves.
     if (tab.linkedBrowser) {
       let tabState = lazy.TabState.collect(tab, TAB_CUSTOM_VALUES.get(tab));
-      return { index: tabState.index - 1, entries: tabState.entries };
+      return {
+        index: tabState.index - 1,
+        entries: tabState.entries,
+        historyTree: tabState.historyTree || null,
+      };
     }
     return null;
   },
@@ -6591,7 +6628,11 @@ var SessionStoreInternal = {
     lazy.TabStateCache.update(browser.permanentKey, {
       // NOTE: Copy the entries array shallowly, so as to not screw with the
       // original tabData's history when getting history updates.
-      history: { entries: [...tabData.entries], index: tabData.index },
+      history: {
+        entries: [...tabData.entries],
+        index: tabData.index,
+        historyTree: tabData.historyTree || null,
+      },
       scroll: tabData.scroll || null,
       storage: tabData.storage || null,
       formdata: tabData.formdata || null,

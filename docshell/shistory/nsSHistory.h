@@ -213,6 +213,14 @@ class nsSHistory : public mozilla::LinkedListElement<nsSHistory>,
 
   int32_t Length() { return int32_t(mEntries.Length()); }
   int32_t Index() { return mIndex; }
+  bool TreeEnabled();
+  int32_t TreeIndexAtOffset(int32_t aIndex, int32_t aOffset);
+  int32_t ActiveIndex(int32_t aIndex);
+  int32_t ActiveLength();
+  nsTArray<int32_t> PathFor(int32_t aIndex);
+  nsCString TreeNodeIdAt(int32_t aIndex);
+  int32_t TreeIndexOf(const nsACString& aNodeId);
+  mozilla::Maybe<nsCString>& PendingTreeParent() { return mPendingTreeParent; }
   uint64_t InsertionGeneration() const { return mInsertionGeneration; }
   uint64_t ClearGeneration() const { return mClearGeneration; }
   already_AddRefed<mozilla::dom::BrowsingContext> GetBrowsingContext() {
@@ -359,6 +367,16 @@ class nsSHistory : public mozilla::LinkedListElement<nsSHistory>,
 
   uint64_t mInsertionGeneration = 0;
   uint64_t mClearGeneration = 0;
+  void EnsureTree();
+  void SelectTreePath(int32_t aIndex);
+  void ResetTree();
+  void PurgeTree(int32_t aCount);
+  nsTArray<int32_t> mTreeParents;
+  nsTArray<int32_t> mTreeSelectedChildren;
+  nsTArray<nsCString> mTreeNodeIds;
+  uint64_t mTreeRevision = 0;
+  nsTArray<int32_t> mActivePath;
+  mozilla::Maybe<nsCString> mPendingTreeParent;
   int32_t mIndex;           // -1 means "no index"
   int32_t mRequestedIndex;  // -1 means "no requested index"
 

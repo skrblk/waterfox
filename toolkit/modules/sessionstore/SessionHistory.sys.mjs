@@ -6,6 +6,7 @@ const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
   E10SUtils: "resource://gre/modules/E10SUtils.sys.mjs",
+  HistoryTree: "resource://gre/modules/sessionstore/HistoryTree.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "PolicyContainer", () => {
@@ -74,6 +75,16 @@ var SessionHistoryInternal = {
       entries: [],
       requestedIndex: shistory.requestedIndex + 1,
     };
+    const treeIds = shistory?.treeEnabled ? shistory.treeNodeIds : null;
+    data.historyTree = treeIds
+      ? {
+          version: 1,
+          revision: shistory.treeRevision,
+          ids: treeIds,
+          parents: shistory.treeParents,
+          selectedChildren: shistory.treeSelectedChildren,
+        }
+      : null;
 
     // We want to keep track how many entries we *could* have collected and
     // how many we skipped, so we can sanitiy-check the current history index
@@ -90,6 +101,9 @@ var SessionHistoryInternal = {
           continue;
         }
         let entry = this.serializeEntry(shEntry);
+        if (treeIds) {
+          entry.historyNodeId = treeIds[entryCount];
+        }
         data.entries.push(entry);
       }
 
@@ -360,6 +374,7 @@ var SessionHistoryInternal = {
 
     let idMap = { used: {} };
     let docIdentMap = {};
+    const restoredIndices = [];
     for (let i = 0; i < tabData.entries.length; i++) {
       let entry = tabData.entries[i];
       // XXXzpao Wallpaper patch for bug 514751
@@ -381,12 +396,26 @@ var SessionHistoryInternal = {
       }
 
       history.addEntry(shEntry);
+      restoredIndices.push(i);
     }
 
     // Select the right history entry.
-    let index = tabData.index - 1;
+    const retainedIndices = history.count
+      ? restoredIndices.slice(-history.count)
+      : [];
+    let index = retainedIndices.indexOf(tabData.index - 1);
+    if (index < 0) {
+      index = Math.max(0, history.count - 1);
+    }
     if (index < history.count && history.index != index) {
       history.index = index;
+    }
+    if (
+      history.treeEnabled &&
+      lazy.HistoryTree.valid(tabData.historyTree, tabData.entries)
+    ) {
+      const tree = lazy.HistoryTree.remap(tabData.historyTree, retainedIndices);
+      history.restoreTree(tree.parents, tree.selectedChildren, tree.ids);
     }
     return history;
   },

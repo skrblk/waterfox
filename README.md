@@ -76,6 +76,12 @@ changes as a patch series.
   existing forward history. The per-tab cap is one billion entries, and saved
   sessions retain all Back and Forward entries. Details and native regression
   checks: [tools/history-preservation](tools/history-preservation/README.md).
+- **Back and Forward retain separate branches.** Navigating from an earlier
+  entry creates another continuation without joining or deleting its siblings.
+  Back follows the parent; Forward follows the last selected continuation.
+  The Back/Forward history menu exposes an expandable tree, with native entry
+  restoration and branch duplication into another tab. Relationships survive
+  session restoration. Details: [history tree](tools/history-preservation/README.md#branching-history).
 
 ## Building
 

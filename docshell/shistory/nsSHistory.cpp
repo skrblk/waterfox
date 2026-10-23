@@ -25,6 +25,7 @@
 #include "nsPIDOMWindowInlines.h"
 #include "nsNetUtil.h"
 #include "nsTHashMap.h"
+#include "nsTHashSet.h"
 #include "SessionHistoryEntry.h"
 #include "nsTArray.h"
 #include "prsystem.h"
@@ -68,8 +69,12 @@ using namespace mozilla::dom;
 #define CONTENT_VIEWER_TIMEOUT_SECONDS_DEFAULT (30 * 60)
 
 static constexpr const char* kObservedPrefs[] = {
-    PREF_SHISTORY_SIZE, PREF_SHISTORY_MAX_TOTAL_VIEWERS,
-    PREF_FISSION_BFCACHEINPARENT, nullptr};
+    PREF_SHISTORY_SIZE,
+    PREF_SHISTORY_MAX_TOTAL_VIEWERS,
+    PREF_FISSION_BFCACHEINPARENT,
+    "browser.sessionhistory.preserve_entries",
+    "browser.sessionhistory.tree_enabled",
+    nullptr};
 
 static int32_t gHistoryMaxSize = 50;
 
@@ -201,6 +206,28 @@ void nsSHistoryObserver::PrefChanged(const char* aPref, void* aSelf) {
 }
 
 void nsSHistoryObserver::PrefChanged(const char* aPref) {
+  if (!strcmp(aPref, "browser.sessionhistory.preserve_entries") ||
+      !strcmp(aPref, "browser.sessionhistory.tree_enabled")) {
+    // Run after the static preference mirrors have received the change. Keep
+    // existing graph relationships while switching the exposed index domain.
+    NS_DispatchToMainThread(NS_NewRunnableFunction(
+        "nsSHistory::HistoryPolicyChanged",
+        []() MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA {
+          nsTArray<RefPtr<nsSHistory>> histories;
+          for (auto* history : gSHistoryList.mList) {
+            histories.AppendElement(history);
+          }
+          for (const auto& history : histories) {
+            if (history->Index() >= 0) {
+              history->SetIndex(history->Index());
+            }
+            if (RefPtr root = history->GetBrowsingContext()) {
+              root->Canonical()->HistoryCommitIndexAndLength(true);
+            }
+          }
+        }));
+    return;
+  }
   nsSHistory::UpdatePrefs();
   nsSHistory::GloballyEvictDocumentViewers();
 }
@@ -560,7 +587,13 @@ void nsSHistory::WalkContiguousEntries(
   }
 
   int32_t index = shistory->GetIndexOfEntry(aEntry);
-  int32_t count = shistory->GetCount();
+  const auto path = static_cast<nsSHistory*>(shistory.get())->PathFor(index);
+  auto position = path.IndexOf(index);
+  if (position == path.NoIndex) {
+    return;
+  }
+  index = position;
+  int32_t count = path.Length();
 
   nsCOMPtr<nsIURI> targetURI = aEntry->GetURI();
 
@@ -571,7 +604,7 @@ void nsSHistory::WalkContiguousEntries(
   // input entry.
   for (int32_t i = index - 1; i >= 0; i--) {
     RefPtr<nsISHEntry> entry;
-    shistory->GetEntryAtIndex(i, getter_AddRefs(entry));
+    shistory->GetEntryAtIndex(path[i], getter_AddRefs(entry));
     if (entry) {
       nsCOMPtr<nsIURI> uri = entry->GetURI();
       if (NS_FAILED(nsContentUtils::GetSecurityManager()->CheckSameOriginURI(
@@ -586,7 +619,7 @@ void nsSHistory::WalkContiguousEntries(
   // Then, Walk forward.
   for (int32_t i = index + 1; i < count; i++) {
     RefPtr<nsISHEntry> entry;
-    shistory->GetEntryAtIndex(i, getter_AddRefs(entry));
+    shistory->GetEntryAtIndex(path[i], getter_AddRefs(entry));
     if (entry) {
       nsCOMPtr<nsIURI> uri = entry->GetURI();
       if (NS_FAILED(nsContentUtils::GetSecurityManager()->CheckSameOriginURI(
@@ -924,6 +957,12 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry) {
 
   bool preserve = rootBC && rootBC->IsContent() &&
                   StaticPrefs::browser_sessionhistory_preserve_entries();
+  bool tree = TreeEnabled();
+  if (tree) {
+    EnsureTree();
+  } else {
+    ResetTree();
+  }
   if (preserve && mIndex >= 0 &&
       mEntries[mIndex]->GetID() != shEntry->GetID()) {
     auto prepared = PrepareForwardHistoryInsertion(mEntries[mIndex]);
@@ -955,16 +994,40 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry) {
 
   // Keep the previous forward branch when preserving navigation history.
   MOZ_ASSERT(mIndex >= -1);
-  if (preserve) {
+  int32_t previousIndex = mIndex;
+  if (tree) {
+    int32_t parent =
+        mPendingTreeParent ? TreeIndexOf(*mPendingTreeParent) : mIndex;
+    mPendingTreeParent.reset();
+    if (parent != mIndex) {
+      SelectTreePath(parent);
+    }
+    int32_t addedIndex = Length();
+    mTreeParents.AppendElement(parent);
+    mTreeSelectedChildren.AppendElement(-1);
+    mTreeNodeIds.AppendElement(
+        nsCString(nsID::GenerateUUID().ToString().get()));
+    ++mTreeRevision;
+    if (parent >= 0) {
+      mTreeSelectedChildren[parent] = addedIndex;
+    }
+    auto position = mActivePath.IndexOf(parent);
+    mActivePath.TruncateLength(position == mActivePath.NoIndex ? 0
+                                                               : position + 1);
+    mActivePath.AppendElement(addedIndex);
+    mEntries.AppendElement(shEntry);
+    mIndex = addedIndex;
+  } else if (preserve) {
     mEntries.InsertElementAt(mIndex + 1, shEntry);
+    mIndex++;
   } else {
     mEntries.TruncateLength(mIndex + 1);
     mEntries.AppendElement(shEntry);
+    mIndex++;
   }
-  mIndex++;
   ++mInsertionGeneration;
-  if (mIndex > 0) {
-    UpdateEntryLength(mEntries[mIndex - 1], mEntries[mIndex], false);
+  if (previousIndex >= 0) {
+    UpdateEntryLength(mEntries[previousIndex], mEntries[mIndex], false);
   } else if (preserve) {
     nsTHashMap<nsIDHashKey, SessionHistoryEntry*> docshellIDToEntry;
     MarkAsInitialEntry(shEntry, docshellIDToEntry);
@@ -1012,7 +1075,249 @@ nsSHistory::SetIndex(int32_t aIndex) {
   }
 
   mIndex = aIndex;
+  SelectTreePath(mIndex);
   return NS_OK;
+}
+
+bool nsSHistory::TreeEnabled() {
+  RefPtr root = GetBrowsingContext();
+  return root && root->IsContent() &&
+         StaticPrefs::browser_sessionhistory_preserve_entries() &&
+         StaticPrefs::browser_sessionhistory_tree_enabled();
+}
+
+void nsSHistory::ResetTree() {
+  mTreeParents.Clear();
+  mTreeSelectedChildren.Clear();
+  mTreeNodeIds.Clear();
+  mActivePath.Clear();
+  ++mTreeRevision;
+}
+
+void nsSHistory::EnsureTree() {
+  if (mTreeParents.Length() == mEntries.Length()) {
+    return;
+  }
+  ResetTree();
+  for (int32_t index = 0; index < Length(); ++index) {
+    mTreeParents.AppendElement(index - 1);
+    mTreeSelectedChildren.AppendElement(index + 1 < Length() ? index + 1 : -1);
+    mTreeNodeIds.AppendElement(
+        nsCString(nsID::GenerateUUID().ToString().get()));
+    mActivePath.AppendElement(index);
+  }
+}
+
+nsTArray<int32_t> nsSHistory::PathFor(int32_t aIndex) {
+  nsTArray<int32_t> path;
+  if (!TreeEnabled()) {
+    for (int32_t index = 0; index < Length(); ++index) {
+      path.AppendElement(index);
+    }
+    return path;
+  }
+  EnsureTree();
+  if (aIndex < 0 || aIndex >= Length()) {
+    return path;
+  }
+  for (int32_t index = aIndex; index >= 0; index = mTreeParents[index]) {
+    path.AppendElement(index);
+  }
+  path.Reverse();
+  for (int32_t index = mTreeSelectedChildren[aIndex]; index >= 0;
+       index = mTreeSelectedChildren[index]) {
+    path.AppendElement(index);
+  }
+  return path;
+}
+
+void nsSHistory::SelectTreePath(int32_t aIndex) {
+  if (!TreeEnabled()) {
+    return;
+  }
+  EnsureTree();
+  if (aIndex < 0 || aIndex >= Length()) {
+    mActivePath.Clear();
+    return;
+  }
+  for (int32_t child = aIndex, parent = mTreeParents[child]; parent >= 0;
+       child = parent, parent = mTreeParents[child]) {
+    mTreeSelectedChildren[parent] = child;
+  }
+  mActivePath = PathFor(aIndex);
+  ++mTreeRevision;
+}
+
+int32_t nsSHistory::TreeIndexAtOffset(int32_t aIndex, int32_t aOffset) {
+  if (!TreeEnabled()) {
+    CheckedInt<int32_t> index = aIndex;
+    index += aOffset;
+    return index.isValid() && index.value() >= 0 && index.value() < Length()
+               ? index.value()
+               : -1;
+  }
+  EnsureTree();
+  const auto path = aIndex == mIndex ? mActivePath.Clone() : PathFor(aIndex);
+  auto position = path.IndexOf(aIndex);
+  if (position == path.NoIndex) {
+    return -1;
+  }
+  CheckedInt<int32_t> index = int32_t(position);
+  index += aOffset;
+  return index.isValid() && index.value() >= 0 &&
+                 index.value() < int32_t(path.Length())
+             ? path[index.value()]
+             : -1;
+}
+
+int32_t nsSHistory::ActiveIndex(int32_t aIndex) {
+  if (!TreeEnabled()) {
+    return aIndex;
+  }
+  EnsureTree();
+  auto position = mActivePath.IndexOf(aIndex);
+  return position == mActivePath.NoIndex ? -1 : int32_t(position);
+}
+
+int32_t nsSHistory::ActiveLength() {
+  if (!TreeEnabled()) {
+    return Length();
+  }
+  EnsureTree();
+  return mActivePath.Length();
+}
+
+nsCString nsSHistory::TreeNodeIdAt(int32_t aIndex) {
+  EnsureTree();
+  return aIndex >= 0 && aIndex < Length() ? mTreeNodeIds[aIndex] : nsCString();
+}
+
+int32_t nsSHistory::TreeIndexOf(const nsACString& aNodeId) {
+  EnsureTree();
+  if (mIndex >= 0 && mIndex < Length() && mTreeNodeIds[mIndex] == aNodeId) {
+    return mIndex;
+  }
+  auto index = mTreeNodeIds.IndexOf(aNodeId);
+  return index == mTreeNodeIds.NoIndex ? -1 : int32_t(index);
+}
+
+NS_IMETHODIMP
+nsSHistory::GetTreeEnabled(bool* aResult) {
+  *aResult = TreeEnabled();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::GetTreeParents(nsTArray<int32_t>& aResult) {
+  EnsureTree();
+  aResult = mTreeParents.Clone();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::GetTreeSelectedChildren(nsTArray<int32_t>& aResult) {
+  EnsureTree();
+  aResult = mTreeSelectedChildren.Clone();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::GetActivePath(nsTArray<int32_t>& aResult) {
+  aResult = PathFor(mIndex);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::GetTreeNodeIds(nsTArray<nsCString>& aResult) {
+  EnsureTree();
+  aResult = mTreeNodeIds.Clone();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::GetTreeRevision(uint64_t* aResult) {
+  EnsureTree();
+  *aResult = mTreeRevision;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::RestoreTree(const nsTArray<int32_t>& aParents,
+                        const nsTArray<int32_t>& aSelectedChildren,
+                        const nsTArray<nsCString>& aNodeIds) {
+  if (aParents.Length() != mEntries.Length() ||
+      aSelectedChildren.Length() != mEntries.Length() ||
+      aNodeIds.Length() != mEntries.Length()) {
+    return NS_ERROR_INVALID_ARG;
+  }
+  nsTHashSet<nsCStringHashKey> ids;
+  for (int32_t index = 0; index < Length(); ++index) {
+    int32_t parent = aParents[index];
+    int32_t child = aSelectedChildren[index];
+    if (parent < -1 || parent >= index || child < -1 || child >= Length() ||
+        (child >= 0 && (child <= index || aParents[child] != index))) {
+      return NS_ERROR_INVALID_ARG;
+    }
+    nsID id;
+    if (!id.Parse(aNodeIds[index].get()) || ids.Contains(aNodeIds[index])) {
+      return NS_ERROR_INVALID_ARG;
+    }
+    ids.Insert(aNodeIds[index]);
+  }
+  SHistoryChangeNotifier change(this);
+  mTreeParents = aParents.Clone();
+  mTreeSelectedChildren = aSelectedChildren.Clone();
+  mTreeNodeIds = aNodeIds.Clone();
+  SelectTreePath(mIndex);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::GotoTreeIndex(int32_t aIndex, bool aUserActivation) {
+  RefPtr root = GetBrowsingContext();
+  NS_ENSURE_TRUE(root, NS_ERROR_NOT_AVAILABLE);
+  nsTArray<LoadEntryResult> loadResults;
+  int32_t previousRequest = mRequestedIndex;
+  nsresult rv = GotoIndex(root, aIndex, loadResults, false, aIndex == mIndex,
+                          aUserActivation);
+  NS_ENSURE_SUCCESS(rv, rv);
+  for (const auto& load : loadResults) {
+    rv = load.mBrowsingContext->CheckSandboxFlags(load.mLoadState);
+    if (NS_FAILED(rv)) {
+      mRequestedIndex = previousRequest;
+      return rv;
+    }
+  }
+  LoadURIs(loadResults, true, [](nsresult) {}, root);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsSHistory::GotoTreeNode(const nsACString& aNodeId, bool aUserActivation) {
+  EnsureTree();
+  auto index = mTreeNodeIds.IndexOf(aNodeId);
+  if (index == mTreeNodeIds.NoIndex) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  return GotoTreeIndex(index, aUserActivation);
+}
+
+void nsSHistory::PurgeTree(int32_t aCount) {
+  if (mTreeParents.Length() < uint32_t(aCount)) {
+    ResetTree();
+    return;
+  }
+  mTreeParents.RemoveElementsAt(0, aCount);
+  mTreeSelectedChildren.RemoveElementsAt(0, aCount);
+  mTreeNodeIds.RemoveElementsAt(0, aCount);
+  ++mTreeRevision;
+  for (auto& parent : mTreeParents) {
+    parent = parent >= aCount ? parent - aCount : -1;
+  }
+  for (auto& child : mTreeSelectedChildren) {
+    child = child >= aCount ? child - aCount : -1;
+  }
+  SelectTreePath(mIndex);
 }
 
 /* Get the requestedIndex */
@@ -1155,8 +1460,13 @@ nsSHistory::ClearHistory(bool aKeepCurrent) {
   int32_t previousIndex = mIndex;
   int32_t previousLength = Length();
   RefPtr<SessionHistoryEntry> current;
+  nsCString currentNodeId;
   if (aKeepCurrent && mIndex >= 0 && mIndex < previousLength) {
     current = mEntries[mIndex];
+    if (TreeEnabled()) {
+      EnsureTree();
+      currentNodeId = mTreeNodeIds[mIndex];
+    }
   }
   int32_t prefix = current ? previousIndex : previousLength;
   int32_t suffix = current ? previousLength - previousIndex - 1 : 0;
@@ -1176,10 +1486,15 @@ nsSHistory::ClearHistory(bool aKeepCurrent) {
   mEntries.Clear();
   mIndex = -1;
   mRequestedIndex = -1;
+  ResetTree();
   nsTHashMap<nsIDHashKey, SessionHistoryEntry*> docshellIDToEntry;
   if (current) {
     mEntries.AppendElement(current);
     mIndex = 0;
+    EnsureTree();
+    if (!currentNodeId.IsEmpty()) {
+      mTreeNodeIds[0] = currentNodeId;
+    }
     MarkAsInitialEntry(current, docshellIDToEntry);
   }
   RefPtr rootBC = GetBrowsingContext();
@@ -1245,6 +1560,7 @@ nsSHistory::PurgeHistory(int32_t aNumEntries) {
   mIndex = std::max(mIndex, -1);
   mRequestedIndex -= aNumEntries;
   mRequestedIndex = std::max(mRequestedIndex, -1);
+  PurgeTree(aNumEntries);
 
   if (rootBC && rootBC->GetDocShell()) {
     rootBC->GetDocShell()->HistoryPurged(aNumEntries);
@@ -1309,6 +1625,7 @@ nsSHistory::ReplaceEntry(int32_t aIndex, nsISHEntry* aReplaceEntry) {
   NotifyListeners(mListeners, [](auto l) { l->OnHistoryReplaceEntry(); });
 
   mEntries[aIndex] = aReplaceEntry->GetAsSessionHistoryEntry();
+  ++mTreeRevision;
 
   return NS_OK;
 }
@@ -2370,6 +2687,7 @@ nsSHistory::UpdateIndex() {
   }
 
   mRequestedIndex = -1;
+  SelectTreePath(mIndex);
   return NS_OK;
 }
 
@@ -2415,6 +2733,19 @@ nsSHistory::HasUserInteractionAtIndex(int32_t aIndex) {
 NS_IMETHODIMP
 nsSHistory::CanGoBackFromEntryAtIndex(int32_t aIndex, bool* aCanGoBack) {
   *aCanGoBack = false;
+  if (TreeEnabled()) {
+    int32_t index = TreeIndexAtOffset(aIndex, -1);
+    while (index >= 0) {
+      if (!StaticPrefs::browser_navigation_requireUserInteraction() ||
+          HasUserInteractionAtIndex(index) ||
+          TreeIndexAtOffset(index, -1) < 0) {
+        *aCanGoBack = true;
+        break;
+      }
+      index = TreeIndexAtOffset(index, -1);
+    }
+    return NS_OK;
+  }
   if (!StaticPrefs::browser_navigation_requireUserInteraction()) {
     *aCanGoBack = aIndex > 0;
     return NS_OK;
@@ -2548,6 +2879,11 @@ nsresult nsSHistory::LoadEntry(BrowsingContext* aSourceBrowsingContext,
                            requestedOffset, prevEntry);
       });
   if (!differenceFound) {
+    if (TreeEnabled()) {
+      SwapEntriesData data = {nullptr, nextEntry, nullptr};
+      SetChildHistoryEntry(prevEntry, rootBC, 0, &data);
+      return UpdateIndex();
+    }
     // LoadNextPossibleEntry will change the offset by one, and in order
     // to keep track of the requestedOffset, need to reset mRequestedIndex to
     // the value it had initially.
@@ -2624,7 +2960,7 @@ UniquePtr<PreservedForwardHistory> nsSHistory::PrepareForwardHistoryInsertion(
   // Inserting into an iframe's joint-history run can separate copies of one
   // logical entry. Give the retained forward run its own Navigation identity.
   // Staging must not change native history if the new load is canceled.
-  if (!aEntry || mIndex < 0 || mIndex + 1 >= Length()) {
+  if (TreeEnabled() || !aEntry || mIndex < 0 || mIndex + 1 >= Length()) {
     return nullptr;
   }
   auto prepared = MakeUnique<PreservedForwardHistory>();
@@ -2695,8 +3031,14 @@ mozilla::dom::SessionHistoryEntry* nsSHistory::FindAdjacentEntryFor(
   nsCOMPtr<nsISHEntry> rootEntry = ancestors.IsEmpty() ? aEntry : ancestors[0];
   nsCOMPtr<nsISHEntry> nextEntry;
   SessionHistoryEntry* foundParent = nullptr;
-  int32_t i =
-      GetIndexOfEntry(rootEntry) + static_cast<int8_t>(aSearchDirection);
+  int32_t rootIndex = GetIndexOfEntry(rootEntry);
+  int32_t i = rootIndex + static_cast<int8_t>(aSearchDirection);
+  if (TreeEnabled() && rootIndex >= 0) {
+    EnsureTree();
+    i = aSearchDirection == SearchDirection::Left
+            ? mTreeParents[rootIndex]
+            : mTreeSelectedChildren[rootIndex];
+  }
   if (i < 0 || i >= Length()) {
     return nullptr;
   }
@@ -2901,6 +3243,14 @@ void nsSHistory::InitiateLoad(BrowsingContext* aSourceBrowsingContext,
       loadState->GetLoadingSessionHistoryInfo();
   aFrameBC->Canonical()->AddLoadingSessionHistoryEntry(loadingInfo->mLoadId,
                                                        aFrameEntry);
+  RefPtr<nsSHistory> history =
+      static_cast<nsSHistory*>(aFrameBC->Canonical()->GetSessionHistory());
+  if (history && history->TreeEnabled()) {
+    LoadingSessionHistoryInfo projected(*loadingInfo);
+    RefPtr<SessionHistoryEntry> entry = aFrameEntry;
+    aFrameBC->Canonical()->GetContiguousEntriesForLoad(projected, entry);
+    loadState->SetLoadingSessionHistoryInfo(projected);
+  }
 
   nsCOMPtr<nsIURI> originalURI = aFrameEntry->GetOriginalURI();
   loadState->SetOriginalURI(originalURI);

@@ -2000,6 +2000,11 @@
   value: false
   mirror: always
 
+- name: browser.sessionhistory.tree_enabled
+  type: bool
+  value: false
+  mirror: always
+
 # SessionStore prefs
 # Maximum number of bytes of DOMSessionStorage data we collect per origin.
 - name: browser.sessionstore.dom_storage_limit

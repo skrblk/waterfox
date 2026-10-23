@@ -1,0 +1,91 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#history-tree-popup {
+  --arrowpanel-padding: 6px;
+  font: menu;
+}
+
+.history-tree-viewport {
+  position: relative;
+  overflow: auto;
+  inline-size: min(36rem, 80vw);
+  block-size: min(var(--history-tree-height, 24rem), 24rem, 60vh);
+  color: var(--panel-color, CanvasText);
+  background: var(--panel-background, Canvas);
+  outline-offset: -2px;
+}
+
+.history-tree-space {
+  position: relative;
+  min-block-size: 28px;
+}
+
+.history-tree-row {
+  box-sizing: border-box;
+  position: absolute;
+  inset-inline: 0;
+  display: flex;
+  align-items: center;
+  block-size: 28px;
+  padding-inline: calc(4px + var(--history-depth) * 14px) 10px;
+  cursor: default;
+  border-radius: var(--border-radius-small, 3px);
+}
+
+.history-tree-row:hover {
+  background: var(--toolbarbutton-hover-background, color-mix(in srgb, CanvasText 10%, Canvas));
+}
+
+.history-tree-row[aria-selected="true"] {
+  background: color-mix(in srgb, AccentColor 18%, Canvas);
+}
+
+.history-tree-row[aria-current="page"] {
+  font-weight: 600;
+}
+
+.history-tree-disclosure {
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  padding: 0;
+  margin: 0;
+  flex: 0 0 20px;
+  block-size: 22px;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+}
+
+.history-tree-disclosure:not(:disabled):hover {
+  background: color-mix(in srgb, CanvasText 15%, transparent);
+}
+
+.history-tree-current {
+  flex: 0 0 16px;
+  color: AccentColor;
+  font-size: 9px;
+}
+
+.history-tree-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.history-tree-depth {
+  flex: 0 0 auto;
+  margin-inline-end: 6px;
+  color: GrayText;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (forced-colors: active) {
+  .history-tree-row[aria-selected="true"] {
+    background: Highlight;
+    color: HighlightText;
+  }
+}

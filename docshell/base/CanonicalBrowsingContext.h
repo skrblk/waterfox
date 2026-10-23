@@ -367,11 +367,14 @@ class CanonicalBrowsingContext final : public BrowsingContext {
   void GetLoadingSessionHistoryInfoFromParent(
       Maybe<LoadingSessionHistoryInfo>& aLoadingInfo);
 
+  void GetContiguousEntriesForLoad(LoadingSessionHistoryInfo& aLoadingInfo,
+                                   const RefPtr<SessionHistoryEntry>& aEntry);
+
   int32_t StaticChildOrdinal();
   void DiscardHistoryBeforeLastClear();
 
   MOZ_CAN_RUN_SCRIPT
-  void HistoryCommitIndexAndLength();
+  void HistoryCommitIndexAndLength(bool aReconcileEntries = false);
 
   void DeactivateDocuments();
 
@@ -638,7 +641,8 @@ class CanonicalBrowsingContext final : public BrowsingContext {
       const nsID& aChangeID,
       const CallerWillNotifyHistoryIndexAndLengthChanges& aProofOfCaller,
       CanonicalBrowsingContext* aRekeyedContext = nullptr,
-      const Maybe<nsID>& aPreviousNavigationId = Nothing());
+      const Maybe<nsID>& aPreviousNavigationId = Nothing(),
+      bool aReconcileEntries = false);
 
   struct UnloadingHost {
     uint64_t mChildID;
@@ -670,9 +674,6 @@ class CanonicalBrowsingContext final : public BrowsingContext {
 
   already_AddRefed<nsDocShellLoadState> CreateLoadInfo(
       SessionHistoryEntry* aEntry, NavigationType aNavigationType);
-
-  void GetContiguousEntriesForLoad(LoadingSessionHistoryInfo& aLoadingInfo,
-                                   const RefPtr<SessionHistoryEntry>& aEntry);
 
   void MaybeReuseNavigationKeyFromActiveEntry(SessionHistoryEntry* aEntry);
 
@@ -722,6 +723,7 @@ class CanonicalBrowsingContext final : public BrowsingContext {
     nsID mInitialNavigationId = {};
     nsTArray<RefPtr<SessionHistoryEntry>> mRedirectEntries{};
     UniquePtr<PreservedForwardHistory> mForwardHistory{};
+    Maybe<nsCString> mTreeSourceNodeId;
   };
   nsTArray<LoadingSessionHistoryEntry> mLoadingEntries;
   RefPtr<SessionHistoryEntry> mActiveEntry;

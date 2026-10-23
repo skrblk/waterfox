@@ -10,6 +10,7 @@ JAR_MANIFESTS += ["jar.mn"]
 
 EXTRA_JS_MODULES.sessionstore = [
     "GlobalState.sys.mjs",
+    "HistoryTreeMenu.sys.mjs",
     "PageWireframes.sys.mjs",
     "RecentlyClosedTabsAndWindowsMenuUtils.sys.mjs",
     "RunState.sys.mjs",

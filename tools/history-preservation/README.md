@@ -10,8 +10,8 @@ navigation continues while the browser retains earlier navigation entries:
 - `history.replaceState()` and `navigation.updateCurrentEntry()` retain the
   previous serialized state as an additional entry, including repeated updates
   at the same address.
-- Navigating from an older entry inserts the new entry after it and retains the
-  existing forward branch.
+- Navigating from an older entry creates another child and retains the existing
+  forward branch separately.
 - Cache eviction and frame removal retain serialized frame history.
 
 The default per-tab cap, `browser.sessionhistory.max_entries`, is 1,000,000,000.
@@ -24,6 +24,57 @@ These defaults can be overridden in `about:config`. Setting
 `browser.sessionhistory.preserve_entries` to `false` restores upstream
 replacement, branching and frame-history cleanup behavior; the other retention
 preferences are independent.
+
+## Branching history
+
+Waterfox also enables `browser.sessionhistory.tree_enabled` by default. After
+visiting A, B and C, going Back to B and navigating to D retains this structure:
+
+```text
+A
+└─ B
+   ├─ C
+   └─ D ← current
+```
+
+Back from D returns to B. Forward from B returns to D, the last selected child.
+Selecting C changes B's Forward continuation to C. Each continuation retains
+its own descendants. A new branch ends at its own leaf; another branch is never
+treated as that leaf's Forward destination. Repeated addresses, distinct saved
+states and iframe-only steps remain separate history nodes.
+
+Open the existing Back/Forward history menu to select another branch. Disclosure
+arrows expand or collapse descendants. Up/Down and Home/End move the selection;
+Left/Right collapse, expand or move between parent and child; Enter or Space
+visits the selected entry. Middle-click or Ctrl-click (Command-click on macOS)
+duplicates the selected entry and complete saved tree into another tab. The
+original tab remains on its current branch. This uses ordinary tab duplication,
+including its container/private context and serialized-state limits; live POST
+streams are available in the original session but are not copied to the new tab.
+
+Entries are restored through native session history, rather than by loading a
+list of URLs. Branch choices take effect when traversal commits; canceled
+navigation leaves the selected path unchanged. The picker virtualizes its rows
+and shows the numerical depth when indentation reaches its visual limit.
+
+Websites see the selected ordered path through `history.length`, relative
+`history.go()` and Back/Forward availability. The Navigation API applies its
+ordinary origin and ancestor-document filtering to that path. Other branches
+remain available through the browser's history picker.
+
+The session format saves node identities, parents and selected children beside
+the existing entries. Older sessions without those relationships are imported
+as a line: their addresses and states survive, but lost fork points cannot be
+reconstructed reliably. Invalid relationship metadata also falls back to a line.
+Turning only `tree_enabled` off retains the earlier preservation behavior, where
+new entries are inserted before the retained forward entries in a single list.
+
+The entry cap applies to the whole retained tree. Purging old entries can leave
+several roots; surviving siblings are not joined to one another. Explicit finite
+serialization limits count Back steps to a common ancestor and Forward steps
+down each branch. Entries beyond either bound are omitted from the saved
+session. The default `-1` limits retain every branch, including disconnected
+roots. Explicit clearing still removes the other retained entries.
 
 ## Behavior and boundaries
 
@@ -49,10 +100,9 @@ Clearing history keeps the displayed page and removes the other retained steps.
 Redirect addresses captured before a clear are discarded. A navigation that
 finishes afterward records its completed destination as a new step.
 
-The Navigation API exposes only the contiguous entries allowed by its origin
-and ancestor-document checks. Same-document history mutations update the local
-list immediately; native joint-history changes are reconciled when the parent
-process acknowledges the mutation.
+Same-document history mutations update the site's selected list immediately;
+native joint-history changes are reconciled when the parent process acknowledges
+the mutation.
 
 ## Native regression checks
 
@@ -69,3 +119,13 @@ python test_history.py --binary /path/to/waterfox --out /path/to/results
 
 Use `--case test_method_name` to select a case. Results are written to
 `results.json`, with the native browser log in `gecko.log`.
+
+Tree-specific cases enable the tree explicitly. The older preservation cases
+exercise the linear compatibility mode by default; `--tree` enables the tree for
+those cases too. Tests that assert the older linear branch ordering have separate
+tree counterparts. Pure graph validation, remapping and session-writer checks
+run without a browser:
+
+```sh
+node --test tools/history-preservation/test_history_tree.mjs
+```

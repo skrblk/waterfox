@@ -1676,3 +1676,14 @@ reduced-protection-infobar-reload-button = Reload
   .accesskey = R
 reduced-protection-infobar-never-show-button = Don’t show again
   .accesskey = D
+
+## Navigation history tree
+
+history-tree-navigation =
+    .aria-label = Navigation history
+history-tree-expand =
+    .aria-label = Expand branch
+history-tree-collapse =
+    .aria-label = Collapse branch
+history-tree-depth =
+    .title = Level { $level }

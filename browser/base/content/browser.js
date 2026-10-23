@@ -42,6 +42,7 @@ ChromeUtils.defineESModuleGetters(this, {
   E10SUtils: "resource://gre/modules/E10SUtils.sys.mjs",
   ExtensionsUI: "resource:///modules/ExtensionsUI.sys.mjs",
   HomePage: "resource:///modules/HomePage.sys.mjs",
+  HistoryTreeMenu: "resource:///modules/sessionstore/HistoryTreeMenu.sys.mjs",
   LightweightThemeConsumer:
     "resource://gre/modules/LightweightThemeConsumer.sys.mjs",
   LoginHelper: "resource://gre/modules/LoginHelper.sys.mjs",
@@ -1516,6 +1517,17 @@ function CreateContainerTabMenu(event) {
 }
 
 function FillHistoryMenu(event) {
+  if (gBrowser.selectedBrowser.browsingContext.sessionHistory?.treeEnabled) {
+    event.preventDefault();
+    const popup = event.target;
+    const anchor =
+      popup.triggerNode?.closest("toolbarbutton") ||
+      (popup.parentNode?.localName === "toolbarbutton"
+        ? popup.parentNode
+        : document.getElementById("back-button"));
+    HistoryTreeMenu.show(window, anchor);
+    return;
+  }
   let parent = event.target;
 
   // Lazily add the hover listeners on first showing and never remove them
