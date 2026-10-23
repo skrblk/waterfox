@@ -46,6 +46,9 @@ class ChildSHistory : public nsISupports, public nsWrapperCache {
 
   int32_t Count();
   int32_t Index();
+  bool HasPendingHistoryChanges() const {
+    return !mPendingSHistoryChanges.IsEmpty();
+  }
 
   /** Reload the current entry in the session history. */
   MOZ_CAN_RUN_SCRIPT

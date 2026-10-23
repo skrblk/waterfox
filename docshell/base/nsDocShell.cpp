@@ -5692,7 +5692,10 @@ void nsDocShell::OnRedirectStateChange(nsIChannel* aOldChannel,
 
   if (!(aRedirectFlags & nsIChannelEventSink::REDIRECT_INTERNAL) &&
       mLoadType & (LOAD_CMD_RELOAD | LOAD_CMD_HISTORY)) {
-    mLoadType = LOAD_NORMAL_REPLACE;
+    mLoadType = StaticPrefs::browser_sessionhistory_preserve_entries() &&
+                        mBrowsingContext->IsContent()
+                    ? LOAD_NORMAL
+                    : LOAD_NORMAL_REPLACE;
   }
 }
 
@@ -8407,6 +8410,22 @@ static void MaybeConvertToReplaceLoad(nsDocShellLoadState* aLoadState,
   // * When we don't have an active document
   // * When a document doesn't yet have a session history entry
   // * When we don't use historyBehavior
+  if (aExtantDocument && aHasActiveEntry &&
+      StaticPrefs::browser_sessionhistory_preserve_entries() &&
+      aExtantDocument->GetBrowsingContext() &&
+      aExtantDocument->GetBrowsingContext()->IsContent() &&
+      !nsContentUtils::NavigationMustBeAReplace(*aLoadState->URI(),
+                                                *aExtantDocument) &&
+      !(aLoadState->LoadType() &
+        (nsIDocShell::LOAD_CMD_HISTORY | nsIDocShell::LOAD_CMD_RELOAD))) {
+    aLoadState->SetLoadType(
+        aLoadState->LoadType() &
+        ~(nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY << 16));
+    aLoadState->SetHistoryBehavior(NavigationHistoryBehavior::Push);
+    aLoadState->SetNeedsCompletelyLoadedDocument(false);
+    return;
+  }
+
   if (!aExtantDocument || !aHasActiveEntry || !aLoadState->HistoryBehavior()) {
     aLoadState->ResetHistoryBehavior();
     return;
@@ -10707,6 +10726,8 @@ bool nsDocShell::OnNewURI(nsIURI* aURI, nsIChannel* aChannel,
    * Hopefully I don't have to do that.
    */
   if (equalUri && mActiveEntry &&
+      !(StaticPrefs::browser_sessionhistory_preserve_entries() &&
+        mBrowsingContext->IsContent()) &&
       (mLoadType == LOAD_NORMAL || mLoadType == LOAD_LINK ||
        mLoadType == LOAD_STOP_CONTENT) &&
       !inputStream) {
@@ -10886,6 +10907,11 @@ nsDocShell::AddState(JS::Handle<JS::Value> aData, const nsAString& aTitle,
     aReplace = true;
   }
 
+  if (mActiveEntry && mBrowsingContext->IsContent() &&
+      StaticPrefs::browser_sessionhistory_preserve_entries()) {
+    aReplace = false;
+  }
+
   // Step A: Serialize aData using structured clone.
   // https://html.spec.whatwg.org/multipage/history.html#dom-history-pushstate
   // step 5.
@@ -11006,14 +11032,18 @@ nsDocShell::AddState(JS::Handle<JS::Value> aData, const nsAString& aTitle,
 nsresult nsDocShell::UpdateURLAndHistory(
     Document* aDocument, nsIURI* aNewURI, nsIStructuredCloneContainer* aData,
     NavigationHistoryBehavior aHistoryHandling, nsIURI* aCurrentURI,
-    bool aEqualURIs, bool aFiredNavigateEvent) {
+    bool aEqualURIs, bool aFiredNavigateEvent,
+    nsIStructuredCloneContainer* aNavigationAPIState) {
   MOZ_LOG_FMT(gNavigationAPILog, LogLevel::Debug, "UpdateURLAndHistory {}",
               aHistoryHandling);
 
   // Implements
   // https://html.spec.whatwg.org/multipage/history.html#url-and-history-update-steps
   MOZ_ASSERT(aHistoryHandling != NavigationHistoryBehavior::Auto);
-  bool isReplace = aHistoryHandling == NavigationHistoryBehavior::Replace;
+  bool preserve = mActiveEntry && mBrowsingContext->IsContent() &&
+                  StaticPrefs::browser_sessionhistory_preserve_entries();
+  bool isReplace =
+      aHistoryHandling == NavigationHistoryBehavior::Replace && !preserve;
 
   // If we have a pending title change, handle it before creating a new entry.
   aDocument->DoNotifyPossibleTitleChange();
@@ -11136,6 +11166,11 @@ nsresult nsDocShell::UpdateURLAndHistory(
     FireDummyOnLocationChange();
   }
   aDocument->SetStateObject(aData);
+
+  if (aNavigationAPIState) {
+    mActiveEntry->SetNavigationAPIState(aNavigationAPIState);
+    mBrowsingContext->SynchronizeNavigationAPIState(aNavigationAPIState);
+  }
 
   if (RefPtr navigation = aDocument->GetInnerWindow()->Navigation()) {
     MOZ_LOG(gNavigationAPILog, LogLevel::Debug,
@@ -12931,7 +12966,9 @@ void nsDocShell::MoveLoadingToActiveEntry(bool aExpired, uint32_t aCacheKey,
             mLoadType,
             /* aUpdatedCacheKey = */ 0, false);
       }
-      if (!(previousActiveEntry && previousActiveEntry->IsTransient())) {
+      if (!(previousActiveEntry && previousActiveEntry->IsTransient()) ||
+          (mBrowsingContext->IsContent() &&
+           StaticPrefs::browser_sessionhistory_preserve_entries())) {
         mBrowsingContext->IncrementHistoryEntryCountForBrowsingContext();
       }
     }

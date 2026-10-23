@@ -534,6 +534,7 @@ class DocumentLoadListener : public nsIInterfaceRequestor,
   // Used to identify an internal redirect in redirect chain.
   // True when we have seen at least one non-interal redirect.
   bool mHaveVisibleRedirect = false;
+  bool mHaveHistoryRedirect = false;
 
   // Pending stream filter requests which should be attached when redirecting to
   // the real channel. Moved into `TriggerRedirectToRealChannel` when the

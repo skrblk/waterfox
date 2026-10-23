@@ -560,7 +560,54 @@ void CanonicalBrowsingContext::SwapHistoryEntries(
 void CanonicalBrowsingContext::AddLoadingSessionHistoryEntry(
     uint64_t aLoadId, SessionHistoryEntry* aEntry) {
   (void)SetHistoryID(aEntry->DocshellID());
-  mLoadingEntries.AppendElement(LoadingSessionHistoryEntry{aLoadId, aEntry});
+  auto* history = static_cast<nsSHistory*>(GetSessionHistory());
+  // Speculative parent loads precede docshell normalization. Capture the source
+  // placeholder now, and validate its identity again before replacing it.
+  auto* source = GetCurrentWindowGlobal();
+  bool replaceInitialEntry = aEntry->ForInitialLoad() && source &&
+                             source->IsInitialDocument() &&
+                             NS_IsAboutBlank(source->GetDocumentURI());
+  mLoadingEntries.AppendElement(LoadingSessionHistoryEntry{
+      aLoadId, aEntry, history ? history->InsertionGeneration() : 0,
+      history ? history->ClearGeneration() : 0,
+      history ? history->ClearGeneration() : 0, replaceInitialEntry,
+      replaceInitialEntry ? mActiveEntry : nullptr,
+      replaceInitialEntry && mActiveEntry ? mActiveEntry->Info().NavigationId()
+                                          : nsID{}});
+}
+
+void CanonicalBrowsingContext::DiscardHistoryBeforeLastClear() {
+  auto* history = static_cast<nsSHistory*>(GetSessionHistory());
+  if (!history) {
+    return;
+  }
+  for (auto& loading : mLoadingEntries) {
+    if (loading.mRedirectClearGeneration != history->ClearGeneration()) {
+      loading.mRedirectEntries.Clear();
+      loading.mForwardHistory = nullptr;
+      loading.mRedirectClearGeneration = history->ClearGeneration();
+    }
+  }
+}
+
+int32_t CanonicalBrowsingContext::StaticChildOrdinal() {
+  if (mStaticChildOrdinal) {
+    return *mStaticChildOrdinal;
+  }
+  if (!GetParent() || CreatedDynamically()) {
+    return -1;
+  }
+  int32_t ordinal = 0;
+  for (BrowsingContext* sibling : GetParent()->Children()) {
+    if (sibling == this) {
+      mStaticChildOrdinal = Some(ordinal);
+      return ordinal;
+    }
+    if (!sibling->CreatedDynamically()) {
+      ++ordinal;
+    }
+  }
+  return -1;
 }
 
 void CanonicalBrowsingContext::GetLoadingSessionHistoryInfoFromParent(
@@ -573,16 +620,24 @@ void CanonicalBrowsingContext::GetLoadingSessionHistoryInfoFromParent(
   SessionHistoryEntry* parentSHE =
       GetParent()->Canonical()->GetActiveSessionHistoryEntry();
   if (parentSHE) {
+    bool staticOrdinal =
+        IsContent() && StaticPrefs::browser_sessionhistory_preserve_entries();
+    if (staticOrdinal && CreatedDynamically()) {
+      return;
+    }
     int32_t index = -1;
     for (BrowsingContext* sibling : GetParent()->Children()) {
+      if (staticOrdinal && sibling->CreatedDynamically()) {
+        continue;
+      }
       ++index;
       if (sibling == this) {
         if (RefPtr entry =
-                parentSHE->GetChildSHEntryIfHasNoDynamicallyAddedChild(index)) {
+                parentSHE->GetChildSHEntryIfHasNoDynamicallyAddedChild(
+                    staticOrdinal ? StaticChildOrdinal() : index,
+                    staticOrdinal)) {
           aLoadingInfo.emplace(entry);
-          mLoadingEntries.AppendElement(LoadingSessionHistoryEntry{
-              aLoadingInfo.value().mLoadId, entry.get()});
-          (void)SetHistoryID(entry->DocshellID());
+          AddLoadingSessionHistoryEntry(aLoadingInfo.value().mLoadId, entry);
         }
         break;
       }
@@ -621,7 +676,9 @@ CanonicalBrowsingContext::CreateLoadingSessionHistoryEntryForLoad(
     aLoadState->SetLoadingSessionHistoryInfo(std::move(lshi));
     existingLoadingInfo = aLoadState->GetLoadingSessionHistoryInfo();
     (void)SetHistoryEntryCount(entry->BCHistoryLength());
-  } else if (aLoadState->LoadType() == LOAD_REFRESH &&
+  } else if ((!IsContent() ||
+              !StaticPrefs::browser_sessionhistory_preserve_entries()) &&
+             aLoadState->LoadType() == LOAD_REFRESH &&
              !ShouldAddEntryForRefresh(aLoadState->URI(),
                                        aLoadState->PostDataStream()) &&
              mActiveEntry) {
@@ -633,11 +690,14 @@ CanonicalBrowsingContext::CreateLoadingSessionHistoryEntryForLoad(
     }
     entry->SetDocshellID(GetHistoryID());
     entry->SetIsDynamicallyAdded(CreatedDynamically());
+    entry->SetStaticChildOrdinal(StaticChildOrdinal());
     entry->SetForInitialLoad(true);
   }
   MOZ_DIAGNOSTIC_ASSERT(entry);
 
-  if (aLoadState->GetNavigationType() == NavigationType::Replace) {
+  if (aLoadState->GetNavigationType() == NavigationType::Replace &&
+      (!IsContent() ||
+       !StaticPrefs::browser_sessionhistory_preserve_entries())) {
     MaybeReuseNavigationKeyFromActiveEntry(entry);
   }
 
@@ -646,8 +706,7 @@ CanonicalBrowsingContext::CreateLoadingSessionHistoryEntryForLoad(
     loadingInfo = MakeUnique<LoadingSessionHistoryInfo>(*existingLoadingInfo);
   } else {
     loadingInfo = MakeUnique<LoadingSessionHistoryInfo>(entry);
-    mLoadingEntries.AppendElement(
-        LoadingSessionHistoryEntry{loadingInfo->mLoadId, entry});
+    AddLoadingSessionHistoryEntry(loadingInfo->mLoadId, entry);
   }
 
   // When adding a new entry we need to make sure that the navigation object
@@ -735,34 +794,72 @@ CanonicalBrowsingContext::CreateLoadingSessionHistoryEntryForLoad(
   return loadingInfo;
 }
 
+void CanonicalBrowsingContext::RecordRedirectHistoryEntry(
+    const LoadingSessionHistoryInfo& aInfo, nsIChannel* aChannel) {
+  if (!IsContent() || !StaticPrefs::browser_sessionhistory_preserve_entries()) {
+    return;
+  }
+  DiscardHistoryBeforeLastClear();
+  for (auto& loading : mLoadingEntries) {
+    if (loading.mLoadId == aInfo.mLoadId) {
+      SessionHistoryInfo info(aChannel, LOAD_NORMAL,
+                              aInfo.mInfo.GetPartitionedPrincipalToInherit(),
+                              aInfo.mInfo.GetPolicyContainer());
+      RefPtr entry = new SessionHistoryEntry(&info);
+      entry->SetDocshellID(GetHistoryID());
+      entry->SetIsSubFrame(!IsTop());
+      entry->SetIsDynamicallyAdded(CreatedDynamically());
+      entry->SetStaticChildOrdinal(StaticChildOrdinal());
+      loading.mRedirectEntries.AppendElement(entry);
+      return;
+    }
+  }
+}
+
 UniquePtr<LoadingSessionHistoryInfo>
 CanonicalBrowsingContext::ReplaceLoadingSessionHistoryEntryForLoad(
     LoadingSessionHistoryInfo* aInfo, nsIChannel* aNewChannel) {
   MOZ_ASSERT(aInfo);
   MOZ_ASSERT(aNewChannel);
 
-  SessionHistoryInfo newInfo =
-      SessionHistoryInfo(aNewChannel, aInfo->mInfo.LoadType(),
-                         aInfo->mInfo.GetPartitionedPrincipalToInherit(),
-                         aInfo->mInfo.GetPolicyContainer());
+  bool preserve =
+      IsContent() && StaticPrefs::browser_sessionhistory_preserve_entries();
+  SessionHistoryInfo newInfo = SessionHistoryInfo(
+      aNewChannel, preserve ? LOAD_NORMAL : aInfo->mInfo.LoadType(),
+      aInfo->mInfo.GetPartitionedPrincipalToInherit(),
+      aInfo->mInfo.GetPolicyContainer());
 
   for (size_t i = 0; i < mLoadingEntries.Length(); ++i) {
     if (mLoadingEntries[i].mLoadId == aInfo->mLoadId) {
       RefPtr<SessionHistoryEntry> loadingEntry = mLoadingEntries[i].mEntry;
-      loadingEntry->SetInfo(&newInfo);
+      if (preserve && !loadingEntry->ForInitialLoad()) {
+        loadingEntry = new SessionHistoryEntry(&newInfo);
+        loadingEntry->SetForInitialLoad(true);
+        mLoadingEntries[i].mEntry = loadingEntry;
+        SessionHistoryEntry::SetByLoadId(aInfo->mLoadId, loadingEntry);
+      } else {
+        loadingEntry->SetInfo(&newInfo);
+      }
 
       if (!IsTop()) {
         loadingEntry->SetIsSubFrame(aInfo->mInfo.IsSubFrame());
       }
       loadingEntry->SetDocshellID(GetHistoryID());
       loadingEntry->SetIsDynamicallyAdded(CreatedDynamically());
+      loadingEntry->SetStaticChildOrdinal(StaticChildOrdinal());
 
-      if (aInfo->mTriggeringNavigationType &&
+      if (!preserve && aInfo->mTriggeringNavigationType &&
           *aInfo->mTriggeringNavigationType == NavigationType::Replace) {
         MaybeReuseNavigationKeyFromActiveEntry(loadingEntry);
       }
 
       auto result = MakeUnique<LoadingSessionHistoryInfo>(loadingEntry, aInfo);
+      if (preserve) {
+        result->mPreservedRedirectCount =
+            mLoadingEntries[i].mRedirectEntries.Length();
+        result->mLoadIsFromSessionHistory = false;
+        result->mTriggeringNavigationType = Some(NavigationType::Push);
+      }
       if (Navigation::IsAPIEnabled()) {
         MOZ_LOG_FMT(gNavigationAPILog, LogLevel::Debug,
                     "CanonicalBrowsingContext::"
@@ -785,6 +882,103 @@ void CanonicalBrowsingContext::GetContiguousEntriesForLoad(
     LoadingSessionHistoryInfo& aLoadingInfo,
     const RefPtr<SessionHistoryEntry>& aEntry) {
   MOZ_DIAGNOSTIC_ASSERT(Navigation::IsAPIEnabled());
+  if (IsContent() && StaticPrefs::browser_sessionhistory_preserve_entries()) {
+    DiscardHistoryBeforeLastClear();
+    aLoadingInfo.mContiguousEntries.Clear();
+    RefPtr<nsSHistory> history = static_cast<nsSHistory*>(GetSessionHistory());
+    auto loadingIter = std::find_if(
+        mLoadingEntries.begin(), mLoadingEntries.end(), [&](const auto& entry) {
+          return entry.mLoadId == aLoadingInfo.mLoadId;
+        });
+    auto* loading =
+        loadingIter != mLoadingEntries.end() ? &*loadingIter : nullptr;
+    bool replaceInitialEntry =
+        history && loading && loading->mReplaceInitialEntry &&
+        loading->mInitialEntryToReplace == mActiveEntry &&
+        (!mActiveEntry || loading->mInitialNavigationId ==
+                              mActiveEntry->Info().NavigationId()) &&
+        loading->mLoadClearGeneration == history->ClearGeneration();
+    if (history && loading && aEntry->ForInitialLoad()) {
+      loading->mForwardHistory = nullptr;
+      if (!replaceInitialEntry) {
+        loading->mForwardHistory =
+            history->PrepareForwardHistoryInsertion(mActiveEntry);
+      }
+    }
+    AutoTArray<RefPtr<SessionHistoryEntry>, 16> projected;
+    size_t targetIndex = 0;
+    bool insertedTarget = false;
+    if (history) {
+      int32_t index = history->Index();
+      RefPtr targetRoot = nsSHistory::GetRootSHEntry(aEntry);
+      int32_t historyTarget =
+          aEntry->ForInitialLoad() ? -1 : history->GetIndexOfEntry(targetRoot);
+      const auto& roots = history->Entries();
+      for (size_t position = 0; position < roots.Length(); ++position) {
+        RefPtr root = roots[position];
+        if (loading && loading->mForwardHistory && position > size_t(index)) {
+          size_t forwardIndex = position - index - 1;
+          if (forwardIndex < loading->mForwardHistory->mCopies.Length()) {
+            root = loading->mForwardHistory->mCopies[forwardIndex];
+          }
+        }
+        if (!aEntry->ForInitialLoad() || !replaceInitialEntry ||
+            int32_t(position) != index) {
+          projected.AppendElement(nsSHistory::EntryInRoot(
+              aEntry->ForInitialLoad() ? mActiveEntry.get() : aEntry.get(),
+              root));
+        }
+        if (int32_t(position) == historyTarget) {
+          targetIndex = projected.Length() - 1;
+          insertedTarget = true;
+        }
+        if (aEntry->ForInitialLoad() && int32_t(position) == index) {
+          if (loading) {
+            projected.AppendElements(loading->mRedirectEntries);
+          }
+          targetIndex = projected.Length();
+          projected.AppendElement(aEntry);
+          insertedTarget = true;
+        }
+      }
+    }
+    if (!insertedTarget || projected.IsEmpty() || !history ||
+        (aEntry->ForInitialLoad() && history->Index() < 0)) {
+      projected.Clear();
+      if (loading) {
+        projected.AppendElements(loading->mRedirectEntries);
+      }
+      targetIndex = projected.Length();
+      projected.AppendElement(aEntry);
+    }
+    nsCOMPtr targetURI = aEntry->GetURIOrInheritedForAboutBlank();
+    auto sameOrigin = [&](SessionHistoryEntry* candidate) {
+      if (!candidate) {
+        return false;
+      }
+      nsCOMPtr uri = candidate->GetURIOrInheritedForAboutBlank();
+      return NS_SUCCEEDED(
+          nsContentUtils::GetSecurityManager()->CheckSameOriginURI(
+              targetURI, uri, false, false));
+    };
+    size_t start = targetIndex;
+    while (start && sameOrigin(projected[start - 1])) {
+      --start;
+    }
+    size_t end = targetIndex + 1;
+    while (end < projected.Length() && sameOrigin(projected[end])) {
+      ++end;
+    }
+    SessionHistoryEntry* previous = nullptr;
+    for (size_t position = start; position < end; ++position) {
+      auto* entry = projected[position].get();
+      if (!previous || entry->GetID() != previous->GetID()) {
+        aLoadingInfo.mContiguousEntries.AppendElement(entry->Info());
+      }
+      previous = entry;
+    }
+    return;
+  }
   nsCOMPtr<nsIURI> uri =
       mActiveEntry ? mActiveEntry->GetURIOrInheritedForAboutBlank() : nullptr;
   nsCOMPtr<nsIURI> targetURI = aEntry->GetURIOrInheritedForAboutBlank();
@@ -1191,6 +1385,7 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
            aLoadId));
   MOZ_ASSERT(aLoadId != UINT64_MAX,
              "Must not send special about:blank loadinfo to parent.");
+  DiscardHistoryBeforeLastClear();
   for (size_t i = 0; i < mLoadingEntries.Length(); ++i) {
     if (mLoadingEntries[i].mLoadId == aLoadId) {
       nsSHistory* shistory = static_cast<nsSHistory*>(GetSessionHistory());
@@ -1201,6 +1396,17 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
       }
 
       RefPtr<SessionHistoryEntry> newActiveEntry = mLoadingEntries[i].mEntry;
+      uint64_t insertionGeneration = mLoadingEntries[i].mInsertionGeneration;
+      bool clearedSinceLoad = mLoadingEntries[i].mLoadClearGeneration !=
+                              shistory->ClearGeneration();
+      bool startedFromInitialEntry = mLoadingEntries[i].mReplaceInitialEntry;
+      bool replaceInitialEntry =
+          startedFromInitialEntry && !clearedSinceLoad &&
+          mLoadingEntries[i].mInitialEntryToReplace == mActiveEntry &&
+          (!mActiveEntry || mLoadingEntries[i].mInitialNavigationId ==
+                                mActiveEntry->Info().NavigationId());
+      auto redirectEntries = std::move(mLoadingEntries[i].mRedirectEntries);
+      auto forwardHistory = std::move(mLoadingEntries[i].mForwardHistory);
       if (aCacheKey != 0) {
         newActiveEntry->SetCacheKey(aCacheKey);
       }
@@ -1210,6 +1416,23 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
       }
 
       bool loadFromSessionHistory = !newActiveEntry->ForInitialLoad();
+      Maybe<nsID> previousNavigationId;
+      if (auto* loading = SessionHistoryEntry::GetByLoadId(aLoadId)) {
+        const auto& previous = loading->mInfoSnapshotForValidation;
+        if (previous &&
+            previous->NavigationId() != newActiveEntry->Info().NavigationId()) {
+          previousNavigationId = Some(previous->NavigationId());
+        }
+      }
+      bool preserve =
+          IsContent() && StaticPrefs::browser_sessionhistory_preserve_entries();
+      if (preserve && !loadFromSessionHistory) {
+        if (replaceInitialEntry) {
+          aLoadType |= nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY << 16;
+        } else if (startedFromInitialEntry || clearedSinceLoad) {
+          aLoadType &= ~(nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY << 16);
+        }
+      }
       newActiveEntry->SetForInitialLoad(false);
       SessionHistoryEntry::RemoveLoadId(aLoadId);
       mLoadingEntries.RemoveElementAt(i);
@@ -1219,13 +1442,53 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
         RefPtr<SessionHistoryEntry> root =
             nsSHistory::GetRootSHEntry(newActiveEntry);
         indexOfHistoryLoad = shistory->GetIndexOfEntry(root);
-        if (indexOfHistoryLoad < 0) {
+        if (indexOfHistoryLoad < 0 && !(preserve && clearedSinceLoad)) {
           // Entry has been removed from the session history.
           return;
+        }
+        if (preserve && !IsTop() && shistory->GetRequestedIndex() == -1 &&
+            indexOfHistoryLoad != shistory->Index() && shistory->Index() >= 0) {
+          RefPtr current = nsSHistory::EntryInRoot(
+              newActiveEntry, shistory->Entries()[shistory->Index()]);
+          if (current && current->GetID() == newActiveEntry->GetID()) {
+            // A sibling traversed while this frame reloaded the same logical
+            // entry. Its current-root copy already describes the right step.
+            newActiveEntry = current;
+            indexOfHistoryLoad = shistory->Index();
+          }
+        }
+        bool recordAsNew =
+            preserve &&
+            ((indexOfHistoryLoad < 0 && clearedSinceLoad) ||
+             (!IsTop() && shistory->GetRequestedIndex() == -1 &&
+              insertionGeneration != shistory->InsertionGeneration() &&
+              indexOfHistoryLoad != shistory->Index()));
+        if (recordAsNew) {
+          if (!IsTop() &&
+              (shistory->Index() < 0 ||
+               !nsSHistory::EntryInRoot(
+                   mActiveEntry ? mActiveEntry.get() : newActiveEntry.get(),
+                   shistory->Entries()[shistory->Index()]))) {
+            CallerWillNotifyHistoryIndexAndLengthChanges caller(shistory);
+            HistoryCommitIndexAndLength(aChangeID, caller);
+            return;
+          }
+          // A clear removed the target, or a new parent navigation superseded
+          // this frame traversal. Record the completed destination as a new
+          // step without resurrecting a deleted root or moving to an old one.
+          previousNavigationId = Some(newActiveEntry->Info().NavigationId());
+          RefPtr<SessionHistoryEntry> identity;
+          newActiveEntry = newActiveEntry->CopyForHistoryInsertion(
+              newActiveEntry->GetID(), identity);
+          newActiveEntry->ClearBCHistoryLength();
+          newActiveEntry->SetStaticChildOrdinal(StaticChildOrdinal());
+          loadFromSessionHistory = false;
+          aLoadType = LOAD_NORMAL;
         }
       }
 
       CallerWillNotifyHistoryIndexAndLengthChanges caller(shistory);
+      shistory->CommitForwardHistoryInsertion(forwardHistory.get());
 
       // If there is a name in the new entry, clear the name of all contiguous
       // entries. This is for https://html.spec.whatwg.org/#history-traversal
@@ -1256,6 +1519,23 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
           }
         }
 
+        for (const auto& redirectEntry : redirectEntries) {
+          // Consume initial-document replacement on the first real address.
+          if (LOAD_TYPE_HAS_FLAGS(
+                  aLoadType, nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY)) {
+            int32_t index = shistory->GetTargetIndexForHistoryOperation();
+            if (index >= 0) {
+              shistory->ReplaceEntry(index, redirectEntry);
+            } else {
+              shistory->AddEntry(redirectEntry);
+            }
+            mActiveEntry = redirectEntry;
+            aLoadType &= ~(nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY << 16);
+          } else {
+            shistory->AddEntry(redirectEntry);
+          }
+        }
+
         if (LOAD_TYPE_HAS_FLAGS(aLoadType,
                                 nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY)) {
           // Replace the current entry with the new entry.
@@ -1273,7 +1553,8 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
           mActiveEntry = newActiveEntry;
         } else if (LOAD_TYPE_HAS_FLAGS(
                        aLoadType, nsIWebNavigation::LOAD_FLAGS_IS_REFRESH) &&
-                   !ShouldAddEntryForRefresh(newActiveEntry) && mActiveEntry) {
+                   !ShouldAddEntryForRefresh(newActiveEntry) && mActiveEntry &&
+                   !preserve) {
           MOZ_LOG_FMT(gSHLog, LogLevel::Verbose,
                       "IsTop: Refresh without adding entry");
           addEntry = false;
@@ -1307,6 +1588,24 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
         // FIXME The old implementations adds it to the parent's mLSHE if there
         //       is one, need to figure out if that makes sense here (peterv
         //       doesn't think it would).
+        for (const auto& redirectEntry : redirectEntries) {
+          if (mActiveEntry &&
+              LOAD_TYPE_HAS_FLAGS(
+                  aLoadType, nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY)) {
+            mActiveEntry->ReplaceWith(*redirectEntry);
+          } else if (mActiveEntry) {
+            shistory->AddNestedSHEntry(mActiveEntry, redirectEntry, Top(),
+                                       false);
+            mActiveEntry = redirectEntry;
+          } else if (GetParent() && GetParent()->mActiveEntry) {
+            GetParent()->mActiveEntry->AddChild(
+                redirectEntry,
+                CreatedDynamically() ? -1 : GetParent()->IndexOf(this),
+                IsInProcess());
+            mActiveEntry = redirectEntry;
+          }
+          aLoadType &= ~(nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY << 16);
+        }
         if (loadFromSessionHistory) {
           if (mActiveEntry) {
             // mActiveEntry is null if we're loading iframes from session
@@ -1328,7 +1627,7 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
                     aLoadType, nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY) ||
                 (LOAD_TYPE_HAS_FLAGS(aLoadType,
                                      nsIWebNavigation::LOAD_FLAGS_IS_REFRESH) &&
-                 !ShouldAddEntryForRefresh(newActiveEntry))) {
+                 !ShouldAddEntryForRefresh(newActiveEntry) && !preserve)) {
               // FIXME We need to make sure that when we create the info we
               //       make a copy of the shared state.
               mActiveEntry->ReplaceWith(*newActiveEntry);
@@ -1365,7 +1664,8 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
 
       ResetSHEntryHasUserInteractionCache();
 
-      HistoryCommitIndexAndLength(aChangeID, caller);
+      HistoryCommitIndexAndLength(aChangeID, caller, this,
+                                  previousNavigationId);
 
       shistory->LogHistory();
 
@@ -1385,8 +1685,7 @@ already_AddRefed<nsDocShellLoadState> CanonicalBrowsingContext::CreateLoadInfo(
   UniquePtr<LoadingSessionHistoryInfo> loadingInfo;
   loadingInfo = MakeUnique<LoadingSessionHistoryInfo>(aEntry);
   loadingInfo->mTriggeringNavigationType = Some(aNavigationType);
-  mLoadingEntries.AppendElement(
-      LoadingSessionHistoryEntry{loadingInfo->mLoadId, aEntry});
+  AddLoadingSessionHistoryEntry(loadingInfo->mLoadId, aEntry);
   loadState->SetLoadingSessionHistoryInfo(std::move(loadingInfo));
 
   return loadState.forget();
@@ -1455,6 +1754,7 @@ void CanonicalBrowsingContext::SetActiveSessionHistoryEntry(
   }
   mActiveEntry = MakeRefPtr<SessionHistoryEntry>(aInfo);
   mActiveEntry->SetDocshellID(GetHistoryID());
+  mActiveEntry->SetStaticChildOrdinal(StaticChildOrdinal());
   mActiveEntry->AdoptBFCacheEntry(oldActiveEntry);
   if (aUpdatedCacheKey != 0) {
     mActiveEntry->SharedInfo()->mCacheKey = aUpdatedCacheKey;
@@ -2840,9 +3140,12 @@ void CanonicalBrowsingContext::HistoryCommitIndexAndLength() {
 
 void CanonicalBrowsingContext::HistoryCommitIndexAndLength(
     const nsID& aChangeID,
-    const CallerWillNotifyHistoryIndexAndLengthChanges& aProofOfCaller) {
+    const CallerWillNotifyHistoryIndexAndLengthChanges& aProofOfCaller,
+    CanonicalBrowsingContext* aRekeyedContext,
+    const Maybe<nsID>& aPreviousNavigationId) {
   if (!IsTop()) {
-    Cast(Top())->HistoryCommitIndexAndLength(aChangeID, aProofOfCaller);
+    Cast(Top())->HistoryCommitIndexAndLength(
+        aChangeID, aProofOfCaller, aRekeyedContext, aPreviousNavigationId);
     return;
   }
 
@@ -2859,24 +3162,45 @@ void CanonicalBrowsingContext::HistoryCommitIndexAndLength(
   shistory->EvictOutOfRangeDocumentViewers(index);
 
   nsTArray<NavigationEntriesTruncation> truncations;
-  if (Navigation::IsAPIEnabled()) {
-    PreOrderWalk([&truncations](BrowsingContext* aContext) {
-      RefPtr<SessionHistoryEntry> activeEntry =
-          aContext->Canonical()->GetActiveSessionHistoryEntry();
-      if (!activeEntry) {
-        return;
-      }
-      uint32_t count = 0;
-      nsSHistory::WalkContiguousEntriesInOrder(activeEntry,
-                                               [&count](SessionHistoryEntry*) {
-                                                 ++count;
-                                                 return true;
-                                               });
-      if (count) {
-        truncations.AppendElement(NavigationEntriesTruncation{aContext, count});
-      }
-    });
-  }
+  PreOrderWalk([&](BrowsingContext* aContext) {
+    RefPtr<SessionHistoryEntry> activeEntry =
+        aContext->Canonical()->GetActiveSessionHistoryEntry();
+    if (!activeEntry) {
+      return;
+    }
+    if (aContext->IsContent() &&
+        StaticPrefs::browser_sessionhistory_preserve_entries()) {
+      (void)aContext->Canonical()->SetHistoryEntryCount(
+          activeEntry->BCHistoryLength());
+    }
+    if (!Navigation::IsAPIEnabled()) {
+      return;
+    }
+    if (aContext->IsContent() &&
+        StaticPrefs::browser_sessionhistory_preserve_entries()) {
+      LoadingSessionHistoryInfo info;
+      info.mInfo = activeEntry->Info();
+      info.mTriggeringNavigationType = Some(NavigationType::Traverse);
+      aContext->Canonical()->GetContiguousEntriesForLoad(info, activeEntry);
+      nsTArray<SessionHistoryInfo> entries;
+      entries.AppendElements(info.mContiguousEntries);
+      truncations.AppendElement(NavigationEntriesTruncation{
+          aContext, uint32_t(entries.Length()), Some(activeEntry->Info()),
+          aContext == aRekeyedContext ? aPreviousNavigationId : Nothing(),
+          std::move(entries)});
+      return;
+    }
+    uint32_t count = 0;
+    nsSHistory::WalkContiguousEntriesInOrder(activeEntry,
+                                             [&count](SessionHistoryEntry*) {
+                                               ++count;
+                                               return true;
+                                             });
+    if (count) {
+      truncations.AppendElement(NavigationEntriesTruncation{
+          aContext, count, Nothing(), Nothing(), {}});
+    }
+  });
 
   Group()->EachParent([&](ContentParent* aParent) {
     (void)aParent->SendHistoryCommitIndexAndLength(this, index, length,

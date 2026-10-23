@@ -11,6 +11,7 @@
 #include "mozilla/CycleCollectedUniquePtr.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/Logging.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/UseCounter.h"
 #include "mozilla/dom/DOMException.h"
@@ -285,6 +286,22 @@ void Navigation::UpdateCurrentEntry(
     return;
   }
 
+  if (StaticPrefs::browser_sessionhistory_preserve_entries()) {
+    RefPtr<Document> document = GetAssociatedDocument();
+    RefPtr<nsDocShell> docShell =
+        document ? nsDocShell::Cast(document->GetDocShell()) : nullptr;
+    if (docShell && docShell->GetBrowsingContext()->IsContent()) {
+      if (auto* entry = docShell->GetActiveSessionHistoryInfo()) {
+        nsCOMPtr<nsIURI> uri = document->GetDocumentURI();
+        nsCOMPtr<nsIStructuredCloneContainer> state = entry->GetStateData();
+        aRv = docShell->UpdateURLAndHistory(document, uri, state,
+                                            NavigationHistoryBehavior::Push,
+                                            uri, true, false, serializedState);
+        return;
+      }
+    }
+  }
+
   currentEntry->SetNavigationAPIState(serializedState);
 
   ToMaybeRef(GetOwnerWindow())
@@ -379,6 +396,57 @@ void Navigation::InitializeHistoryEntries(
       ("aInitialSHInfo: %s %s\n", key.ToString().get(), id.ToString().get()));
 }
 
+void Navigation::ReconcileHistoryEntries(
+    mozilla::Span<const SessionHistoryInfo> aNewSHInfos,
+    const SessionHistoryInfo* aCurrentSHInfo,
+    const Maybe<nsID>& aPreviousNavigationId) {
+  if (HasEntriesAndEventsDisabled() || !aCurrentSHInfo) {
+    return;
+  }
+  RefPtr current(GetCurrentEntry());
+  if (!current || (!current->IsSameEntry(aCurrentSHInfo) &&
+                   (!aPreviousNavigationId ||
+                    current->SessionHistoryInfo()->NavigationId() !=
+                        *aPreviousNavigationId))) {
+    return;
+  }
+  nsTArray<RefPtr<NavigationHistoryEntry>> entries;
+  nsTArray<RefPtr<NavigationHistoryEntry>> disposedEntries;
+  for (size_t index = 0; index < aNewSHInfos.Length(); ++index) {
+    RefPtr<NavigationHistoryEntry> entry;
+    for (const auto& existing : mEntries) {
+      if (existing->IsSameEntry(&aNewSHInfos[index])) {
+        entry = existing;
+        break;
+      }
+    }
+    if (!entry) {
+      entry = MakeRefPtr<NavigationHistoryEntry>(GetRelevantGlobal(),
+                                                 &aNewSHInfos[index], index);
+    }
+    entry->SetIndex(index);
+    entries.AppendElement(entry);
+  }
+  for (const auto& existing : mEntries) {
+    if (!entries.Contains(existing)) {
+      existing->ResetIndexForDisposal();
+      disposedEntries.AppendElement(existing);
+    }
+  }
+  mEntries = std::move(entries);
+  SetCurrentEntryIndex(aCurrentSHInfo);
+  if (!disposedEntries.IsEmpty()) {
+    NS_DispatchToMainThread(
+        NS_NewRunnableFunction("Navigation::ReconcileHistoryEntries",
+                               [oldEntries = std::move(disposedEntries)]()
+                                   MOZ_CAN_RUN_SCRIPT_BOUNDARY_LAMBDA {
+                                     for (const auto& entry : oldEntries) {
+                                       MOZ_KnownLive(entry)->FireDisposeEvent();
+                                     }
+                                   }));
+  }
+}
+
 // https://html.spec.whatwg.org/#update-the-navigation-api-entries-for-a-same-document-navigation
 void Navigation::UpdateEntriesForSameDocumentNavigation(
     SessionHistoryInfo* aDestinationSHE, NavigationType aNavigationType,
@@ -405,11 +473,24 @@ void Navigation::UpdateEntriesForSameDocumentNavigation(
       MOZ_LOG(gNavigationAPILog, LogLevel::Debug, ("Push navigation"));
       mCurrentEntryIndex =
           Some(mCurrentEntryIndex ? *mCurrentEntryIndex + 1 : 0);
-      disposedEntries.AppendElements(Span(mEntries).From(*mCurrentEntryIndex));
-      mEntries.RemoveElementsAt(*mCurrentEntryIndex,
-                                mEntries.Length() - *mCurrentEntryIndex);
-      mEntries.AppendElement(MakeRefPtr<NavigationHistoryEntry>(
-          GetRelevantGlobal(), aDestinationSHE, *mCurrentEntryIndex));
+      if (StaticPrefs::browser_sessionhistory_preserve_entries() &&
+          GetAssociatedDocument()->GetBrowsingContext()->IsContent()) {
+        mEntries.InsertElementAt(
+            *mCurrentEntryIndex,
+            MakeRefPtr<NavigationHistoryEntry>(
+                GetRelevantGlobal(), aDestinationSHE, *mCurrentEntryIndex));
+        for (size_t index = *mCurrentEntryIndex + 1; index < mEntries.Length();
+             ++index) {
+          mEntries[index]->SetIndex(index);
+        }
+      } else {
+        disposedEntries.AppendElements(
+            Span(mEntries).From(*mCurrentEntryIndex));
+        mEntries.RemoveElementsAt(*mCurrentEntryIndex,
+                                  mEntries.Length() - *mCurrentEntryIndex);
+        mEntries.AppendElement(MakeRefPtr<NavigationHistoryEntry>(
+            GetRelevantGlobal(), aDestinationSHE, *mCurrentEntryIndex));
+      }
       break;
 
     case NavigationType::Replace:

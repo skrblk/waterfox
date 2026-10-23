@@ -19,6 +19,7 @@
 #include "mozilla/ResultVariant.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_extensions.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_fission.h"
 #include "mozilla/StaticPrefs_security.h"
 #include "mozilla/dom/BrowserParent.h"
@@ -2780,8 +2781,8 @@ nsresult DocumentLoadListener::DoOnStartRequest(nsIRequest* aRequest) {
   }
   MOZ_DIAGNOSTIC_ASSERT(mChannel);
 
-  if (mHaveVisibleRedirect && GetDocumentBrowsingContext() &&
-      mLoadingSessionHistoryInfo) {
+  if ((mHaveVisibleRedirect || mHaveHistoryRedirect) &&
+      GetDocumentBrowsingContext() && mLoadingSessionHistoryInfo) {
     mLoadingSessionHistoryInfo =
         GetDocumentBrowsingContext()->ReplaceLoadingSessionHistoryEntryForLoad(
             mLoadingSessionHistoryInfo.get(), mChannel);
@@ -3202,6 +3203,23 @@ DocumentLoadListener::AsyncOnChannelRedirect(
   // If HTTPS-Only mode is enabled, we need to check whether the exception-flag
   // needs to be removed or set, by asking the PermissionManager.
   nsHTTPSOnlyUtils::TestSitePermissionAndPotentiallyAddExemption(mChannel);
+
+  if (mLoadingSessionHistoryInfo) {
+    if (RefPtr context = GetDocumentBrowsingContext()) {
+      nsCOMPtr<nsIURI> oldURI, newURI;
+      aOldChannel->GetURI(getter_AddRefs(oldURI));
+      aNewChannel->GetURI(getter_AddRefs(newURI));
+      bool equal = true;
+      if (oldURI && newURI && NS_SUCCEEDED(oldURI->Equals(newURI, &equal)) &&
+          !equal) {
+        context->RecordRedirectHistoryEntry(*mLoadingSessionHistoryInfo,
+                                            aOldChannel);
+        mHaveHistoryRedirect |=
+            context->IsContent() &&
+            StaticPrefs::browser_sessionhistory_preserve_entries();
+      }
+    }
+  }
 
   // We don't need to confirm internal redirects or record any
   // history for them, so just immediately verify and return.

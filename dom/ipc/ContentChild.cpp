@@ -4405,7 +4405,30 @@ mozilla::ipc::IPCResult ContentChild::RecvHistoryCommitIndexAndLength(
       continue;
     }
     if (RefPtr<Navigation> navigation = window->Navigation()) {
-      navigation->TruncateForwardEntries(truncation.newLength());
+      if (truncation.activeEntry()) {
+        RefPtr history =
+            truncation.context().get()->Top()->GetChildSessionHistory();
+        if (history && history->HasPendingHistoryChanges()) {
+          continue;
+        }
+        auto* active = docShell->GetActiveSessionHistoryInfo();
+        const auto& canonical = *truncation.activeEntry();
+        bool sameURI = false;
+        if (!active || !active->SharesDocumentWith(canonical) ||
+            (active->NavigationId() != canonical.NavigationId() &&
+             (!truncation.previousNavigationId() ||
+              active->NavigationId() != *truncation.previousNavigationId())) ||
+            !active->GetURI() || !canonical.GetURI() ||
+            NS_FAILED(active->GetURI()->Equals(canonical.GetURI(), &sameURI)) ||
+            !sameURI) {
+          continue;
+        }
+        active->AdoptNavigationIdentityFrom(canonical);
+        navigation->ReconcileHistoryEntries(truncation.entries(), active,
+                                            truncation.previousNavigationId());
+      } else {
+        navigation->TruncateForwardEntries(truncation.newLength());
+      }
     }
   }
   return IPC_OK();

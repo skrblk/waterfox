@@ -13,9 +13,12 @@ function test() {
   // Make sure the functionality added in bug 943339 doesn't affect the results
   Services.prefs.setIntPref("browser.sessionstore.max_serialize_back", -1);
   Services.prefs.setIntPref("browser.sessionstore.max_serialize_forward", -1);
+  // Exercise cap eviction without depending on the product's retention default.
+  Services.prefs.setIntPref("browser.sessionhistory.max_entries", 50);
   registerCleanupFunction(function () {
     Services.prefs.clearUserPref("browser.sessionstore.max_serialize_back");
     Services.prefs.clearUserPref("browser.sessionstore.max_serialize_forward");
+    Services.prefs.clearUserPref("browser.sessionhistory.max_entries");
   });
 
   let tab = BrowserTestUtils.addTab(gBrowser);

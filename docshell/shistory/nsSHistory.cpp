@@ -45,6 +45,7 @@
 #include "mozilla/ProcessPriorityManager.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_fission.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "nsIWebNavigation.h"
@@ -368,7 +369,9 @@ nsresult nsSHistory::Startup() {
   // session history size to less than the default value.
   int32_t defaultHistoryMaxSize =
       Preferences::GetInt(PREF_SHISTORY_SIZE, 50, PrefValueKind::Default);
-  if (gHistoryMaxSize < defaultHistoryMaxSize) {
+  // The preservation policy honors an explicitly configured retention limit.
+  if (!StaticPrefs::browser_sessionhistory_preserve_entries() &&
+      gHistoryMaxSize < defaultHistoryMaxSize) {
     gHistoryMaxSize = defaultHistoryMaxSize;
   }
 
@@ -739,7 +742,15 @@ nsSHistory::AddNestedSHEntry(nsISHEntry* aOldEntry, nsISHEntry* aNewEntry,
                                    aCloneChildren, getter_AddRefs(child));
 
   if (NS_SUCCEEDED(rv)) {
-    if (aOldEntry->IsTransient()) {
+    if (aRootBC->IsContent() &&
+        StaticPrefs::browser_sessionhistory_preserve_entries()) {
+      auto prepared =
+          PrepareForwardHistoryInsertion(aOldEntry->GetAsSessionHistoryEntry());
+      CommitForwardHistoryInsertion(prepared.get());
+    }
+    if (aOldEntry->IsTransient() &&
+        !(aRootBC->IsContent() &&
+          StaticPrefs::browser_sessionhistory_preserve_entries())) {
       rv = ReplaceEntry(mIndex, child);
     } else {
       rv = AddEntry(child);
@@ -871,6 +882,20 @@ nsSHistory::AddToRootSessionHistory(bool aCloneChildren, nsISHEntry* aOSHE,
   return rv;
 }
 
+static void MarkAsInitialEntry(
+    SessionHistoryEntry* aEntry,
+    nsTHashMap<nsIDHashKey, SessionHistoryEntry*>& aHashtable) {
+  if (!aEntry->BCHistoryLength().Modified()) {
+    ++(aEntry->BCHistoryLength());
+  }
+  aHashtable.InsertOrUpdate(aEntry->DocshellID(), aEntry);
+  for (const RefPtr<SessionHistoryEntry>& entry : aEntry->Children()) {
+    if (entry) {
+      MarkAsInitialEntry(entry, aHashtable);
+    }
+  }
+}
+
 /* Add an entry to the History list at mIndex and
  * increment the index to point to the new entry
  */
@@ -897,13 +922,20 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry) {
     shEntry->SetDocshellID(mRootDocShellID);
   }
 
+  bool preserve = rootBC && rootBC->IsContent() &&
+                  StaticPrefs::browser_sessionhistory_preserve_entries();
+  if (preserve && mIndex >= 0 &&
+      mEntries[mIndex]->GetID() != shEntry->GetID()) {
+    auto prepared = PrepareForwardHistoryInsertion(mEntries[mIndex]);
+    CommitForwardHistoryInsertion(prepared.get());
+  }
   if (mIndex >= 0) {
     MOZ_ASSERT(mIndex < Length(), "Index out of range!");
     if (mIndex >= Length()) {
       return NS_ERROR_FAILURE;
     }
 
-    if (mEntries[mIndex] && mEntries[mIndex]->IsTransient()) {
+    if (!preserve && mEntries[mIndex] && mEntries[mIndex]->IsTransient()) {
       NotifyListeners(mListeners, [](auto l) { l->OnHistoryReplaceEntry(); });
       mEntries[mIndex] = shEntry;
       return NS_OK;
@@ -911,7 +943,7 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry) {
   }
   SHistoryChangeNotifier change(this);
 
-  int32_t truncating = Length() - 1 - mIndex;
+  int32_t truncating = preserve ? 0 : Length() - 1 - mIndex;
   if (truncating > 0) {
     NotifyListeners(mListeners,
                     [truncating](auto l) { l->OnHistoryTruncate(truncating); });
@@ -921,14 +953,21 @@ nsSHistory::AddEntry(nsISHEntry* aSHEntry) {
   NotifyListeners(mListeners,
                   [&uri, this](auto l) { l->OnHistoryNewEntry(uri, mIndex); });
 
-  // Remove all entries after the current one, add the new one, and set the
-  // new one as the current one.
+  // Keep the previous forward branch when preserving navigation history.
   MOZ_ASSERT(mIndex >= -1);
-  mEntries.TruncateLength(mIndex + 1);
-  mEntries.AppendElement(shEntry);
+  if (preserve) {
+    mEntries.InsertElementAt(mIndex + 1, shEntry);
+  } else {
+    mEntries.TruncateLength(mIndex + 1);
+    mEntries.AppendElement(shEntry);
+  }
   mIndex++;
+  ++mInsertionGeneration;
   if (mIndex > 0) {
     UpdateEntryLength(mEntries[mIndex - 1], mEntries[mIndex], false);
+  } else if (preserve) {
+    nsTHashMap<nsIDHashKey, SessionHistoryEntry*> docshellIDToEntry;
+    MarkAsInitialEntry(shEntry, docshellIDToEntry);
   }
 
   // Purge History list if it is too long
@@ -1100,20 +1139,6 @@ void nsSHistory::WindowIndices(int32_t aIndex, int32_t* aOutStartIndex,
   *aOutEndIndex = std::min(Length() - 1, aIndex + nsSHistory::VIEWER_WINDOW);
 }
 
-static void MarkAsInitialEntry(
-    SessionHistoryEntry* aEntry,
-    nsTHashMap<nsIDHashKey, SessionHistoryEntry*>& aHashtable) {
-  if (!aEntry->BCHistoryLength().Modified()) {
-    ++(aEntry->BCHistoryLength());
-  }
-  aHashtable.InsertOrUpdate(aEntry->DocshellID(), aEntry);
-  for (const RefPtr<SessionHistoryEntry>& entry : aEntry->Children()) {
-    if (entry) {
-      MarkAsInitialEntry(entry, aHashtable);
-    }
-  }
-}
-
 static void ClearEntries(SessionHistoryEntry* aEntry) {
   aEntry->ClearBCHistoryLength();
   for (const RefPtr<SessionHistoryEntry>& entry : aEntry->Children()) {
@@ -1121,6 +1146,54 @@ static void ClearEntries(SessionHistoryEntry* aEntry) {
       ClearEntries(entry);
     }
   }
+}
+
+NS_IMETHODIMP
+nsSHistory::ClearHistory(bool aKeepCurrent) {
+  SHistoryChangeNotifier change(this);
+  ++mClearGeneration;
+  int32_t previousIndex = mIndex;
+  int32_t previousLength = Length();
+  RefPtr<SessionHistoryEntry> current;
+  if (aKeepCurrent && mIndex >= 0 && mIndex < previousLength) {
+    current = mEntries[mIndex];
+  }
+  int32_t prefix = current ? previousIndex : previousLength;
+  int32_t suffix = current ? previousLength - previousIndex - 1 : 0;
+  if (prefix > 0) {
+    NotifyListeners(mListeners, [prefix](auto listener) {
+      listener->OnHistoryPurge(prefix);
+    });
+  }
+  if (suffix > 0) {
+    NotifyListeners(mListeners, [suffix](auto listener) {
+      listener->OnHistoryTruncate(suffix);
+    });
+  }
+  for (const auto& entry : mEntries) {
+    ClearEntries(entry);
+  }
+  mEntries.Clear();
+  mIndex = -1;
+  mRequestedIndex = -1;
+  nsTHashMap<nsIDHashKey, SessionHistoryEntry*> docshellIDToEntry;
+  if (current) {
+    mEntries.AppendElement(current);
+    mIndex = 0;
+    MarkAsInitialEntry(current, docshellIDToEntry);
+  }
+  RefPtr rootBC = GetBrowsingContext();
+  if (rootBC) {
+    rootBC->PreOrderWalk([&docshellIDToEntry](BrowsingContext* aBC) {
+      SessionHistoryEntry* entry = docshellIDToEntry.Get(aBC->GetHistoryID());
+      (void)aBC->SetHistoryEntryCount(entry ? uint32_t(entry->BCHistoryLength())
+                                            : 0);
+    });
+    if (rootBC->GetDocShell()) {
+      rootBC->GetDocShell()->HistoryPurged(previousLength);
+    }
+  }
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -1132,6 +1205,9 @@ nsSHistory::PurgeHistory(int32_t aNumEntries) {
   SHistoryChangeNotifier change(this);
 
   aNumEntries = std::min(aNumEntries, Length());
+  if (aNumEntries == Length()) {
+    ++mClearGeneration;
+  }
 
   NotifyListeners(mListeners,
                   [aNumEntries](auto l) { l->OnHistoryPurge(aNumEntries); });
@@ -2230,6 +2306,12 @@ nsSHistory::RemoveEntries(nsTArray<nsID>& aIDs, int32_t aStartIndex) {
 
 void nsSHistory::RemoveEntries(nsTArray<nsID>& aIDs, int32_t aStartIndex,
                                bool* aDidRemove) {
+  RefPtr rootBC = GetBrowsingContext();
+  if (rootBC && rootBC->IsContent() &&
+      StaticPrefs::browser_sessionhistory_preserve_entries()) {
+    *aDidRemove = false;
+    return;
+  }
   SHistoryChangeNotifier change(this);
 
   int32_t index = aStartIndex;
@@ -2511,6 +2593,84 @@ class SessionHistoryEntryIDComparator {
 };
 
 }  // namespace
+
+SessionHistoryEntry* nsSHistory::EntryInRoot(SessionHistoryEntry* aEntry,
+                                             SessionHistoryEntry* aRoot) {
+  if (!aEntry || !aRoot) {
+    return nullptr;
+  }
+  AutoTArray<SessionHistoryEntry*, 8> ancestors;
+  RefPtr ancestor = aEntry->GetParent();
+  while (ancestor) {
+    ancestors.AppendElement(ancestor);
+    ancestor = ancestor->GetParent();
+  }
+  if (ancestors.IsEmpty()) {
+    return aRoot;
+  }
+  ancestors.Reverse();
+  if (auto* parent = FindParent(ancestors, aRoot)) {
+    for (const auto& child : parent->Children()) {
+      if (child && child->DocshellID() == aEntry->DocshellID()) {
+        return child;
+      }
+    }
+  }
+  return nullptr;
+}
+
+UniquePtr<PreservedForwardHistory> nsSHistory::PrepareForwardHistoryInsertion(
+    SessionHistoryEntry* aEntry) {
+  // Inserting into an iframe's joint-history run can separate copies of one
+  // logical entry. Give the retained forward run its own Navigation identity.
+  // Staging must not change native history if the new load is canceled.
+  if (!aEntry || mIndex < 0 || mIndex + 1 >= Length()) {
+    return nullptr;
+  }
+  auto prepared = MakeUnique<PreservedForwardHistory>();
+  prepared->mIndex = mIndex;
+  prepared->mLength = Length();
+  prepared->mAnchor = mEntries[mIndex];
+  prepared->mPreviousIdentity = aEntry;
+  for (int32_t index = mIndex + 1; index < Length(); ++index) {
+    auto* entry = EntryInRoot(aEntry, mEntries[index]);
+    if (!entry || entry->GetID() != aEntry->GetID()) {
+      break;
+    }
+    // Malformed histories can alias a node in multiple root slots. Never
+    // reidentify an object that is also the retained active entry.
+    if (entry == aEntry) {
+      return nullptr;
+    }
+    prepared->mOriginals.AppendElement(mEntries[index]);
+    prepared->mCopies.AppendElement(mEntries[index]->CopyForHistoryInsertion(
+        aEntry->GetID(), prepared->mNewIdentity));
+  }
+  return prepared->mCopies.IsEmpty() ? nullptr : std::move(prepared);
+}
+
+bool nsSHistory::CommitForwardHistoryInsertion(
+    PreservedForwardHistory* aPrepared) {
+  if (!aPrepared || mIndex != aPrepared->mIndex ||
+      Length() != aPrepared->mLength || mIndex < 0 ||
+      mEntries[mIndex] != aPrepared->mAnchor) {
+    return false;
+  }
+  for (uint32_t index = 0; index < aPrepared->mOriginals.Length(); ++index) {
+    if (mEntries[mIndex + 1 + index] != aPrepared->mOriginals[index]) {
+      return false;
+    }
+  }
+  bool addedContribution = false;
+  // Keep native pointers and immutable load-validation snapshots valid for
+  // history loads already in flight. Only the planned identities change.
+  for (uint32_t index = 0; index < aPrepared->mCopies.Length(); ++index) {
+    aPrepared->mOriginals[index]->ApplyHistoryInsertionIdentity(
+        *aPrepared->mCopies[index], aPrepared->mPreviousIdentity,
+        addedContribution);
+  }
+  return true;
+}
 
 mozilla::dom::SessionHistoryEntry* nsSHistory::FindAdjacentEntryFor(
     mozilla::dom::SessionHistoryEntry* aEntry,

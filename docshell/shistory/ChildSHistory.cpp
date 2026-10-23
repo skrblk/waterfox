@@ -89,7 +89,11 @@ int32_t ChildSHistory::Index() {
 
 nsID ChildSHistory::AddPendingHistoryChange() {
   int32_t indexDelta = 1;
-  int32_t lengthDelta = (Index() + indexDelta) - (Count() - 1);
+  int32_t lengthDelta =
+      mBrowsingContext->IsContent() &&
+              StaticPrefs::browser_sessionhistory_preserve_entries()
+          ? 1
+          : (Index() + indexDelta) - (Count() - 1);
   return AddPendingHistoryChange(indexDelta, lengthDelta);
 }
 

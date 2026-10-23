@@ -71,6 +71,11 @@ changes as a patch series.
   and copied links retain an uncommitted first navigation through
   immediate discard, while unsubmitted address-bar drafts do not replace
   the page or pending navigation address.
+- **Navigation keeps earlier history.** Redirect hops, replacement navigations
+  and state replacements retain their previous entries. New branches keep
+  existing forward history. The per-tab cap is one billion entries, and saved
+  sessions retain all Back and Forward entries. Details and native regression
+  checks: [tools/history-preservation](tools/history-preservation/README.md).
 
 ## Building
 

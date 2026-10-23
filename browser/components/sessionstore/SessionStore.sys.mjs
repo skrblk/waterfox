@@ -1798,6 +1798,9 @@ var SessionStoreInternal = {
       OnHistoryPurge() {
         this.collectFrom(-1);
       }
+      OnHistoryTruncate() {
+        this.collectFrom(-1);
+      }
       OnHistoryReload() {
         this.collectFrom(-1);
         return true;

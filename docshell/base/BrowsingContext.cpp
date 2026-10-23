@@ -4439,7 +4439,8 @@ bool BrowsingContext::AddSHEntryWouldIncreaseLength(
   // nsSHistory::AddEntry and AddNestedSHEntry do a replace load if the current
   // entry is marked as transient.
   const bool isCurrentTransientEntry =
-      aCurrentEntry && aCurrentEntry->IsTransient();
+      aCurrentEntry && aCurrentEntry->IsTransient() &&
+      !(IsContent() && StaticPrefs::browser_sessionhistory_preserve_entries());
 
   // If this is the first entry for an iframe, it would be added to the parent
   // entry instead of creating a new top-level entry.
@@ -4470,12 +4471,23 @@ void BrowsingContext::SessionHistoryCommit(
                        aLoadType, nsIWebNavigation::LOAD_FLAGS_REPLACE_HISTORY),
                    isRefreshLoad = LOAD_TYPE_HAS_FLAGS(
                        aLoadType, nsIWebNavigation::LOAD_FLAGS_IS_REFRESH);
-        if (!isReplaceLoad &&
-            AddSHEntryWouldIncreaseLength(aPreviousActiveEntry) &&
+        const bool preserve =
+            IsContent() &&
+            StaticPrefs::browser_sessionhistory_preserve_entries();
+        if ((!isReplaceLoad || (preserve && aInfo.mPreservedRedirectCount)) &&
+            (AddSHEntryWouldIncreaseLength(aPreviousActiveEntry) ||
+             (preserve && aInfo.mPreservedRedirectCount)) &&
             ShouldUpdateSessionHistory(aLoadType) &&
-            (!isRefreshLoad ||
+            (!isRefreshLoad || preserve ||
              ShouldAddEntryForRefresh(aPreviousURI, aInfo.mInfo))) {
-          changeID = rootSH->AddPendingHistoryChange();
+          if (preserve) {
+            int32_t added = aInfo.mPreservedRedirectCount +
+                            (!isReplaceLoad && AddSHEntryWouldIncreaseLength(
+                                                   aPreviousActiveEntry));
+            changeID = rootSH->AddPendingHistoryChange(added, added);
+          } else {
+            changeID = rootSH->AddPendingHistoryChange();
+          }
         }
       } else {
         // History load doesn't change the length, only index.

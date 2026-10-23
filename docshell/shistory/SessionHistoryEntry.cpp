@@ -20,6 +20,7 @@
 #include "nsXULAppAPI.h"
 #include "mozilla/PresState.h"
 #include "mozilla/StaticPrefs_fission.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/dom/BindingIPCUtils.h"
 #include "mozilla/dom/BrowserParent.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
@@ -133,6 +134,15 @@ SessionHistoryInfo::SessionHistoryInfo(
   uint32_t loadFlags;
   aChannel->GetLoadFlags(&loadFlags);
   mLoadReplace = !!(loadFlags & nsIChannel::LOAD_REPLACE);
+
+  if (StaticPrefs::browser_sessionhistory_preserve_entries()) {
+    if (nsCOMPtr<nsIUploadChannel2> postChannel = do_QueryInterface(aChannel)) {
+      int64_t contentLength;
+      MOZ_ALWAYS_SUCCEEDS(postChannel->CloneUploadStream(
+          &contentLength, getter_AddRefs(mPostData)));
+      MOZ_ASSERT_IF(mPostData, NS_InputStreamIsCloneable(mPostData));
+    }
+  }
 
   MaybeUpdateTitleFromURI();
 
@@ -427,6 +437,7 @@ LoadingSessionHistoryInfo::LoadingSessionHistoryInfo(
       mPreviousEntry(aInfo->mPreviousEntry),
       mTriggeringNavigationType(aInfo->mTriggeringNavigationType),
       mLoadId(aInfo->mLoadId),
+      mPreservedRedirectCount(aInfo->mPreservedRedirectCount),
       mLoadIsFromSessionHistory(aInfo->mLoadIsFromSessionHistory),
       mOffset(aInfo->mOffset),
       mLoadingCurrentEntry(aInfo->mLoadingCurrentEntry) {
@@ -503,7 +514,66 @@ SessionHistoryEntry::SessionHistoryEntry(const SessionHistoryEntry& aEntry)
     : mInfo(MakeUnique<SessionHistoryInfo>(*aEntry.mInfo)),
       mParent(aEntry.mParent),
       mID(aEntry.mID),
+      mStaticChildOrdinal(aEntry.mStaticChildOrdinal),
       mBCHistoryLength(aEntry.mBCHistoryLength) {}
+
+already_AddRefed<SessionHistoryEntry>
+SessionHistoryEntry::CopyForHistoryInsertion(
+    uint32_t aSplitID, RefPtr<SessionHistoryEntry>& aNewIdentity) {
+  RefPtr copy = new SessionHistoryEntry(*this);
+  copy->mParent = nullptr;
+  copy->mWireframe = mWireframe;
+  copy->mForInitialLoad = mForInitialLoad;
+  if (mID == aSplitID) {
+    if (aNewIdentity) {
+      copy->mID = aNewIdentity->mID;
+      copy->mInfo->mNavigationKey = aNewIdentity->mInfo->mNavigationKey;
+      copy->mInfo->mNavigationId = aNewIdentity->mInfo->mNavigationId;
+    } else {
+      copy->mID = ++gEntryID;
+      copy->mInfo->mNavigationKey = nsID::GenerateUUID();
+      copy->mInfo->mNavigationId = nsID::GenerateUUID();
+      aNewIdentity = copy;
+    }
+  }
+  for (uint32_t index = 0; index < mChildren.Length(); ++index) {
+    RefPtr<SessionHistoryEntry> child;
+    if (mChildren[index]) {
+      child = mChildren[index]->CopyForHistoryInsertion(aSplitID, aNewIdentity);
+    }
+    copy->mChildren.AppendElement(child);
+    if (child) {
+      child->SetParent(copy);
+    }
+  }
+  return copy.forget();
+}
+
+void SessionHistoryEntry::ApplyHistoryInsertionIdentity(
+    const SessionHistoryEntry& aCopy, SessionHistoryEntry* aPreviousIdentity,
+    bool& aAddedContribution) {
+  MOZ_ASSERT(mChildren.Length() == aCopy.mChildren.Length());
+  if (mID != aCopy.mID) {
+    if (mBCHistoryLength.Modified()) {
+      MOZ_ASSERT(!aPreviousIdentity->mBCHistoryLength.Modified());
+      aPreviousIdentity->mBCHistoryLength.SetModified(true);
+      mBCHistoryLength.SetModified(false);
+    }
+    if (!aAddedContribution) {
+      ++mBCHistoryLength;
+      aAddedContribution = true;
+    }
+    mID = aCopy.mID;
+    mInfo->mNavigationKey = aCopy.mInfo->mNavigationKey;
+    mInfo->mNavigationId = aCopy.mInfo->mNavigationId;
+  }
+  for (uint32_t index = 0; index < mChildren.Length(); ++index) {
+    if (mChildren[index]) {
+      mChildren[index]->ApplyHistoryInsertionIdentity(
+          *aCopy.mChildren[index], aPreviousIdentity, aAddedContribution);
+    }
+  }
+}
 
 SessionHistoryEntry::~SessionHistoryEntry() {
   // Null out the mParent pointers on all our kids.
@@ -1121,6 +1191,26 @@ SessionHistoryEntry::IsDynamicallyAdded() {
   return SharedInfo()->mDynamicallyCreated;
 }
 
+NS_IMETHODIMP SessionHistoryEntry::GetDynamicallyAdded(bool* aResult) {
+  *aResult = IsDynamicallyAdded();
+  return NS_OK;
+}
+
+NS_IMETHODIMP SessionHistoryEntry::SetDynamicallyAdded(bool aValue) {
+  SetIsDynamicallyAdded(aValue);
+  return NS_OK;
+}
+
+NS_IMETHODIMP SessionHistoryEntry::GetStaticChildOrdinal(int32_t* aResult) {
+  *aResult = mStaticChildOrdinal;
+  return NS_OK;
+}
+
+NS_IMETHODIMP SessionHistoryEntry::SetStaticChildOrdinal(int32_t aValue) {
+  mStaticChildOrdinal = aValue;
+  return NS_OK;
+}
+
 void SessionHistoryEntry::SetWireframe(const Maybe<Wireframe>& aWireframe) {
   mWireframe = aWireframe;
 }
@@ -1322,6 +1412,23 @@ SessionHistoryEntry::GetChildAt(int32_t aIndex, nsISHEntry** aChild) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+SessionHistoryEntry::RestoreChildAt(nsISHEntry* aChild, int32_t aIndex) {
+  NS_ENSURE_ARG(aIndex >= 0);
+  if (uint32_t(aIndex) >= mChildren.Length()) {
+    mChildren.SetLength(aIndex + 1);
+  }
+  if (mChildren[aIndex]) {
+    mChildren[aIndex]->SetParent(nullptr);
+  }
+  auto* child = static_cast<SessionHistoryEntry*>(aChild);
+  mChildren[aIndex] = child;
+  if (child) {
+    child->SetParent(this);
+  }
+  return NS_OK;
+}
+
 void SessionHistoryEntry::GetChildAt(int32_t aIndex,
                                      SessionHistoryEntry** aChild) {
   RefPtr<SessionHistoryEntry> child = mChildren.SafeElementAt(aIndex);
@@ -1330,10 +1437,10 @@ void SessionHistoryEntry::GetChildAt(int32_t aIndex,
 
 SessionHistoryEntry*
 SessionHistoryEntry::GetChildSHEntryIfHasNoDynamicallyAddedChild(
-    int32_t aChildOffset) {
+    int32_t aChildOffset, bool aStaticOrdinal) {
   bool dynamicallyAddedChild = false;
   HasDynamicallyAddedChild(&dynamicallyAddedChild);
-  if (dynamicallyAddedChild) {
+  if (dynamicallyAddedChild && !aStaticOrdinal) {
     return nullptr;
   }
 
@@ -1356,6 +1463,27 @@ SessionHistoryEntry::GetChildSHEntryIfHasNoDynamicallyAddedChild(
   }
   // Get the child subframe from session history.
   auto* child = mChildren.SafeElementAt(aChildOffset);
+  if (aStaticOrdinal) {
+    // Use the saved static position, never a compressed array index: an empty
+    // slot might belong to a static frame that has not loaded anything useful.
+    child = nullptr;
+    bool legacyUnambiguous = !dynamicallyAddedChild;
+    for (const auto& candidate : mChildren) {
+      if (!candidate) {
+        legacyUnambiguous = false;
+      } else if (!candidate->IsDynamicallyAdded() &&
+                 candidate->mStaticChildOrdinal == aChildOffset) {
+        child = candidate;
+        break;
+      }
+    }
+    if (!child && legacyUnambiguous) {
+      child = mChildren.SafeElementAt(aChildOffset);
+      if (child && child->mStaticChildOrdinal >= 0) {
+        child = nullptr;
+      }
+    }
+  }
   if (child) {
     // Set the parent's Load Type on the child
     child->SetLoadType(mInfo->mLoadType);
@@ -1766,6 +1894,7 @@ void ParamTraits<mozilla::dom::LoadingSessionHistoryInfo>::Write(
   WriteParam(aWriter, aParam.mPreviousEntry);
   WriteParam(aWriter, aParam.mTriggeringNavigationType);
   WriteParam(aWriter, aParam.mLoadId);
+  WriteParam(aWriter, aParam.mPreservedRedirectCount);
   WriteParam(aWriter, aParam.mLoadIsFromSessionHistory);
   WriteParam(aWriter, aParam.mOffset);
   WriteParam(aWriter, aParam.mLoadingCurrentEntry);
@@ -1780,6 +1909,7 @@ bool ParamTraits<mozilla::dom::LoadingSessionHistoryInfo>::Read(
       !ReadParam(aReader, &aResult->mPreviousEntry) ||
       !ReadParam(aReader, &aResult->mTriggeringNavigationType) ||
       !ReadParam(aReader, &aResult->mLoadId) ||
+      !ReadParam(aReader, &aResult->mPreservedRedirectCount) ||
       !ReadParam(aReader, &aResult->mLoadIsFromSessionHistory) ||
       !ReadParam(aReader, &aResult->mOffset) ||
       !ReadParam(aReader, &aResult->mLoadingCurrentEntry) ||

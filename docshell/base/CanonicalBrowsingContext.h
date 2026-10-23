@@ -139,6 +139,9 @@ class CanonicalBrowsingContext final : public BrowsingContext {
   UniquePtr<LoadingSessionHistoryInfo> ReplaceLoadingSessionHistoryEntryForLoad(
       LoadingSessionHistoryInfo* aInfo, nsIChannel* aNewChannel);
 
+  void RecordRedirectHistoryEntry(const LoadingSessionHistoryInfo& aInfo,
+                                  nsIChannel* aChannel);
+
   using PrintPromise =
       MozPromise<MaybeDiscardedBrowsingContext, nsresult, false>;
   MOZ_CAN_RUN_SCRIPT RefPtr<PrintPromise> Print(nsIPrintSettings*);
@@ -327,6 +330,9 @@ class CanonicalBrowsingContext final : public BrowsingContext {
 
   void GetLoadingSessionHistoryInfoFromParent(
       Maybe<LoadingSessionHistoryInfo>& aLoadingInfo);
+
+  int32_t StaticChildOrdinal();
+  void DiscardHistoryBeforeLastClear();
 
   MOZ_CAN_RUN_SCRIPT
   void HistoryCommitIndexAndLength();
@@ -594,7 +600,9 @@ class CanonicalBrowsingContext final : public BrowsingContext {
 
   void HistoryCommitIndexAndLength(
       const nsID& aChangeID,
-      const CallerWillNotifyHistoryIndexAndLengthChanges& aProofOfCaller);
+      const CallerWillNotifyHistoryIndexAndLengthChanges& aProofOfCaller,
+      CanonicalBrowsingContext* aRekeyedContext = nullptr,
+      const Maybe<nsID>& aPreviousNavigationId = Nothing());
 
   struct UnloadingHost {
     uint64_t mChildID;
@@ -670,9 +678,18 @@ class CanonicalBrowsingContext final : public BrowsingContext {
   struct LoadingSessionHistoryEntry {
     uint64_t mLoadId = 0;
     RefPtr<SessionHistoryEntry> mEntry;
+    uint64_t mInsertionGeneration = 0;
+    uint64_t mLoadClearGeneration = 0;
+    uint64_t mRedirectClearGeneration = 0;
+    bool mReplaceInitialEntry = false;
+    RefPtr<SessionHistoryEntry> mInitialEntryToReplace;
+    nsID mInitialNavigationId = {};
+    nsTArray<RefPtr<SessionHistoryEntry>> mRedirectEntries{};
+    UniquePtr<PreservedForwardHistory> mForwardHistory{};
   };
   nsTArray<LoadingSessionHistoryEntry> mLoadingEntries;
   RefPtr<SessionHistoryEntry> mActiveEntry;
+  Maybe<int32_t> mStaticChildOrdinal;
 
   RefPtr<nsSecureBrowserUI> mSecureBrowserUI;
   RefPtr<BrowsingContextWebProgress> mWebProgress;

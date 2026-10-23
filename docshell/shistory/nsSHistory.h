@@ -160,6 +160,13 @@ class nsSHistory : public mozilla::LinkedListElement<nsSHistory>,
 
   nsTArray<RefPtr<SessionHistoryEntry>>& Entries() { return mEntries; }
 
+  static SessionHistoryEntry* EntryInRoot(SessionHistoryEntry* aEntry,
+                                          SessionHistoryEntry* aRoot);
+  mozilla::UniquePtr<mozilla::dom::PreservedForwardHistory>
+  PrepareForwardHistoryInsertion(SessionHistoryEntry* aEntry);
+  bool CommitForwardHistoryInsertion(
+      mozilla::dom::PreservedForwardHistory* aPrepared);
+
   void NotifyOnHistoryReplaceEntry();
 
   void RemoveEntries(nsTArray<nsID>& aIDs, int32_t aStartIndex,
@@ -206,6 +213,8 @@ class nsSHistory : public mozilla::LinkedListElement<nsSHistory>,
 
   int32_t Length() { return int32_t(mEntries.Length()); }
   int32_t Index() { return mIndex; }
+  uint64_t InsertionGeneration() const { return mInsertionGeneration; }
+  uint64_t ClearGeneration() const { return mClearGeneration; }
   already_AddRefed<mozilla::dom::BrowsingContext> GetBrowsingContext() {
     return mozilla::dom::BrowsingContext::Get(mRootBC);
   }
@@ -348,6 +357,8 @@ class nsSHistory : public mozilla::LinkedListElement<nsSHistory>,
   // Track all bfcache entries and evict on expiration.
   mozilla::UniquePtr<HistoryTracker> mHistoryTracker;
 
+  uint64_t mInsertionGeneration = 0;
+  uint64_t mClearGeneration = 0;
   int32_t mIndex;           // -1 means "no index"
   int32_t mRequestedIndex;  // -1 means "no requested index"
 
