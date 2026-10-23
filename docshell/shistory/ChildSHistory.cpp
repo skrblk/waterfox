@@ -91,7 +91,8 @@ nsID ChildSHistory::AddPendingHistoryChange() {
   int32_t indexDelta = 1;
   int32_t lengthDelta =
       mBrowsingContext->IsContent() &&
-              StaticPrefs::browser_sessionhistory_preserve_entries()
+              StaticPrefs::browser_sessionhistory_preserve_entries() &&
+              !StaticPrefs::browser_sessionhistory_tree_enabled()
           ? 1
           : (Index() + indexDelta) - (Count() - 1);
   return AddPendingHistoryChange(indexDelta, lengthDelta);
@@ -144,7 +145,9 @@ bool ChildSHistory::CanGo(int32_t aOffset, bool aRequireUserInteraction) {
   }
 
   bool canGoBack;
-  mHistory->CanGoBackFromEntryAtIndex(Index(), &canGoBack);
+  int32_t canonicalIndex = -1;
+  mHistory->GetIndex(&canonicalIndex);
+  mHistory->CanGoBackFromEntryAtIndex(canonicalIndex, &canGoBack);
   return canGoBack;
 }
 

@@ -4457,7 +4457,15 @@ void BrowsingContext::SessionHistoryCommit(
   if (XRE_IsContentProcess()) {
     RefPtr<ChildSHistory> rootSH = Top()->GetChildSessionHistory();
     if (rootSH) {
-      if (!aInfo.mLoadIsFromSessionHistory) {
+      const bool tree =
+          IsContent() &&
+          StaticPrefs::browser_sessionhistory_preserve_entries() &&
+          StaticPrefs::browser_sessionhistory_tree_enabled();
+      if (tree && aInfo.mHistoryTreeLength >= 0) {
+        changeID = rootSH->AddPendingHistoryChange(
+            aInfo.mHistoryTreeIndex - int32_t(rootSH->Index()),
+            aInfo.mHistoryTreeLength - int32_t(rootSH->Count()));
+      } else if (!aInfo.mLoadIsFromSessionHistory) {
         // We try to mimic as closely as possible whether
         // CanonicalBrowsingContext::SessionHistoryCommit will increase
         // the session history length.
@@ -4484,7 +4492,10 @@ void BrowsingContext::SessionHistoryCommit(
             int32_t added = aInfo.mPreservedRedirectCount +
                             (!isReplaceLoad && AddSHEntryWouldIncreaseLength(
                                                    aPreviousActiveEntry));
-            changeID = rootSH->AddPendingHistoryChange(added, added);
+            int32_t lengthDelta = tree ? int32_t(rootSH->Index()) + added + 1 -
+                                             int32_t(rootSH->Count())
+                                       : added;
+            changeID = rootSH->AddPendingHistoryChange(added, lengthDelta);
           } else {
             changeID = rootSH->AddPendingHistoryChange();
           }

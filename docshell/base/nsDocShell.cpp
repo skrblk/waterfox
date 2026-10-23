@@ -8276,7 +8276,16 @@ nsresult nsDocShell::HandleSameDocumentNavigation(
     navigation->UpdateEntriesForSameDocumentNavigation(
         mActiveEntry.get(),
         NavigationUtils::NavigationTypeFromLoadType(mLoadType).valueOr(
-            NavigationType::Push));
+            NavigationType::Push),
+        true,
+        mBrowsingContext->IsContent() &&
+                StaticPrefs::browser_sessionhistory_preserve_entries() &&
+                StaticPrefs::browser_sessionhistory_tree_enabled() &&
+                aLoadState->GetLoadingSessionHistoryInfo()
+            ? Span<const SessionHistoryInfo>(
+                  aLoadState->GetLoadingSessionHistoryInfo()
+                      ->mContiguousEntries)
+            : Span<const SessionHistoryInfo>());
   }
 
   // The check for uninvoked directives must come before ScrollToAnchor() is

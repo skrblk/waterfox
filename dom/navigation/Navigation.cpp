@@ -45,6 +45,7 @@
 #include "nsIXULRuntime.h"
 #include "nsNetUtil.h"
 #include "nsPIDOMWindowInlines.h"
+#include "nsTHashSet.h"
 #include "nsTHashtable.h"
 
 mozilla::LazyLogModule gNavigationAPILog("NavigationAPI");
@@ -412,23 +413,27 @@ void Navigation::ReconcileHistoryEntries(
   }
   nsTArray<RefPtr<NavigationHistoryEntry>> entries;
   nsTArray<RefPtr<NavigationHistoryEntry>> disposedEntries;
-  for (size_t index = 0; index < aNewSHInfos.Length(); ++index) {
-    RefPtr<NavigationHistoryEntry> entry;
-    for (const auto& existing : mEntries) {
-      if (existing->IsSameEntry(&aNewSHInfos[index])) {
-        entry = existing;
-        break;
-      }
+  nsTHashMap<nsIDHashKey, RefPtr<NavigationHistoryEntry>> existingById;
+  nsTHashSet<nsPtrHashKey<NavigationHistoryEntry>> retained;
+  for (const auto& existing : mEntries) {
+    const nsID& id = existing->SessionHistoryInfo()->NavigationId();
+    if (!existingById.Contains(id)) {
+      existingById.InsertOrUpdate(id, existing);
     }
+  }
+  for (size_t index = 0; index < aNewSHInfos.Length(); ++index) {
+    RefPtr<NavigationHistoryEntry> entry =
+        existingById.Get(aNewSHInfos[index].NavigationId());
     if (!entry) {
       entry = MakeRefPtr<NavigationHistoryEntry>(GetRelevantGlobal(),
                                                  &aNewSHInfos[index], index);
     }
     entry->SetIndex(index);
+    retained.Insert(entry.get());
     entries.AppendElement(entry);
   }
   for (const auto& existing : mEntries) {
-    if (!entries.Contains(existing)) {
+    if (!retained.Contains(existing.get())) {
       existing->ResetIndexForDisposal();
       disposedEntries.AppendElement(existing);
     }
@@ -451,6 +456,13 @@ void Navigation::ReconcileHistoryEntries(
 void Navigation::UpdateEntriesForSameDocumentNavigation(
     SessionHistoryInfo* aDestinationSHE, NavigationType aNavigationType,
     bool aFiredNavigateEvent) {
+  UpdateEntriesForSameDocumentNavigation(aDestinationSHE, aNavigationType,
+                                         aFiredNavigateEvent, {});
+}
+
+void Navigation::UpdateEntriesForSameDocumentNavigation(
+    SessionHistoryInfo* aDestinationSHE, NavigationType aNavigationType,
+    bool aFiredNavigateEvent, Span<const SessionHistoryInfo> aTreeEntries) {
   // Step 1.
   if (HasEntriesAndEventsDisabled()) {
     return;
@@ -465,6 +477,11 @@ void Navigation::UpdateEntriesForSameDocumentNavigation(
   switch (aNavigationType) {
     case NavigationType::Traverse:
       MOZ_LOG(gNavigationAPILog, LogLevel::Debug, ("Traverse navigation"));
+      if (oldCurrentEntry && !aTreeEntries.IsEmpty()) {
+        ReconcileHistoryEntries(
+            aTreeEntries, aDestinationSHE,
+            Some(oldCurrentEntry->SessionHistoryInfo()->NavigationId()));
+      }
       SetCurrentEntryIndex(aDestinationSHE);
       MOZ_ASSERT(mCurrentEntryIndex);
       break;
@@ -474,6 +491,7 @@ void Navigation::UpdateEntriesForSameDocumentNavigation(
       mCurrentEntryIndex =
           Some(mCurrentEntryIndex ? *mCurrentEntryIndex + 1 : 0);
       if (StaticPrefs::browser_sessionhistory_preserve_entries() &&
+          !StaticPrefs::browser_sessionhistory_tree_enabled() &&
           GetAssociatedDocument()->GetBrowsingContext()->IsContent()) {
         mEntries.InsertElementAt(
             *mCurrentEntryIndex,
@@ -1561,6 +1579,21 @@ bool Navigation::FireTraverseNavigateEvent(
   // Step 5
   RefPtr<NavigationHistoryEntry> destinationNHE =
       FindNavigationHistoryEntry(destinationSessionHistoryInfo);
+  if (!destinationNHE && !HasEntriesAndEventsDisabled() &&
+      StaticPrefs::browser_sessionhistory_preserve_entries() &&
+      StaticPrefs::browser_sessionhistory_tree_enabled() &&
+      GetAssociatedDocument()->GetBrowsingContext()->IsContent()) {
+    const auto& entries =
+        aLoadState->GetLoadingSessionHistoryInfo()->mContiguousEntries;
+    for (size_t index = 0; index < entries.Length(); ++index) {
+      if (entries[index].NavigationId() ==
+          destinationSessionHistoryInfo.NavigationId()) {
+        destinationNHE = MakeRefPtr<NavigationHistoryEntry>(
+            GetRelevantGlobal(), &entries[index], index);
+        break;
+      }
+    }
+  }
 
   // Step 6.2 and step 7.2
   RefPtr<nsIStructuredCloneContainer> state =

@@ -39,11 +39,23 @@ export class RemoteWebNavigation {
 
   get canGoBackIgnoringUserInteraction() {
     const sessionHistory = this._browser.browsingContext.sessionHistory;
+    if (sessionHistory?.treeEnabled) {
+      return (
+        this._browser.browsingContext.childSessionHistory?.canGo(-1, false) ??
+        false
+      );
+    }
     return sessionHistory?.index > 0;
   }
 
   get canGoForward() {
     let sessionHistory = this._browser.browsingContext.sessionHistory;
+    if (sessionHistory?.treeEnabled) {
+      return (
+        this._browser.browsingContext.childSessionHistory?.canGo(1, false) ??
+        false
+      );
+    }
     return sessionHistory?.index < sessionHistory?.count - 1;
   }
 

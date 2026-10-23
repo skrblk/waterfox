@@ -51,6 +51,17 @@ interface nsISHistory: nsISupports
    */
   attribute long index;
 
+  readonly attribute boolean treeEnabled;
+  readonly attribute Array<long> treeParents;
+  readonly attribute Array<long> treeSelectedChildren;
+  readonly attribute Array<ACString> treeNodeIds;
+  readonly attribute unsigned long long treeRevision;
+  readonly attribute Array<long> activePath;
+  void restoreTree(in Array<long> aParents, in Array<long> aSelectedChildren,
+                   in Array<ACString> aNodeIds);
+  [can_run_script] void gotoTreeIndex(in long aIndex, in boolean aUserActivation);
+  [can_run_script] void gotoTreeNode(in ACString aNodeId, in boolean aUserActivation);
+
   /**
    * A readonly property of the interface that returns
    * the index of the last document that started to load and

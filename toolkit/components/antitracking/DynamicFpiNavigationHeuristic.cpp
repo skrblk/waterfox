@@ -94,14 +94,31 @@ void DynamicFpiNavigationHeuristic::MaybeGrantStorageAccess(
     return;
   }
 
+  bool treeEnabled = false;
+  rv = shistory->GetTreeEnabled(&treeEnabled);
+  NS_ENSURE_SUCCESS_VOID(rv);
+  nsTArray<int32_t> path;
+  int32_t position = index;
+  if (treeEnabled) {
+    rv = shistory->GetActivePath(path);
+    NS_ENSURE_SUCCESS_VOID(rv);
+    auto current = path.IndexOf(index);
+    if (current == path.NoIndex) {
+      return;
+    }
+    position = int32_t(current);
+  }
+
   // Loop backward in the session history, looking for the initial visit to
   // the same site host as the opening document, and building a set of site
-  // hosts we interacted with along the way.
+  // hosts we interacted with along the way. Only the current node and its
+  // ancestors belong to that navigation; sibling branches and selected future
+  // entries must not grant storage access.
   bool foundResultSiteInHistory = false;
   nsTArray<RefPtr<nsIURI>> candidateURIs;
   RefPtr<nsISHEntry> entry;
-  for (int32_t i = 0; i <= index; i++) {
-    shistory->GetEntryAtIndex(index - i, getter_AddRefs(entry));
+  for (int32_t i = position; i >= 0; --i) {
+    shistory->GetEntryAtIndex(treeEnabled ? path[i] : i, getter_AddRefs(entry));
     if (!entry) {
       continue;
     }

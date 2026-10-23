@@ -17,6 +17,7 @@ pref("browser.startup.page", 3);
 pref("browser.tabs.warnOnClose", true);
 
 pref("browser.sessionhistory.preserve_entries", true);
+pref("browser.sessionhistory.tree_enabled", true);
 pref("browser.sessionhistory.max_entries", 1000000000);
 pref("browser.sessionstore.max_serialize_back", -1);
 pref("browser.sessionstore.max_serialize_forward", -1);

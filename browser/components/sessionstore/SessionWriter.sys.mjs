@@ -5,6 +5,7 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  HistoryTree: "resource://gre/modules/sessionstore/HistoryTree.sys.mjs",
   sessionStoreLogger: "resource:///modules/sessionstore/SessionLogger.sys.mjs",
 });
 
@@ -162,6 +163,28 @@ const SessionWriterInternal = {
     if (options.isFinalWrite) {
       for (let window of state.windows) {
         for (let tab of window.tabs) {
+          if (lazy.HistoryTree.valid(tab.historyTree, tab.entries)) {
+            if (
+              tab.entries.length &&
+              (this.maxSerializeBack > -1 || this.maxSerializeForward > -1)
+            ) {
+              const current = Number.isInteger(tab.index)
+                ? Math.max(0, Math.min(tab.entries.length - 1, tab.index - 1))
+                : tab.entries.length - 1;
+              const kept = lazy.HistoryTree.retained(
+                tab.historyTree,
+                current,
+                this.maxSerializeBack,
+                this.maxSerializeForward
+              );
+              if (kept) {
+                tab.historyTree = lazy.HistoryTree.remap(tab.historyTree, kept);
+                tab.entries = kept.map(index => tab.entries[index]);
+                tab.index = kept.indexOf(current) + 1;
+              }
+            }
+            continue;
+          }
           let lower = 0;
           let upper = tab.entries.length;
 
@@ -172,6 +195,7 @@ const SessionWriterInternal = {
             upper = Math.min(upper, tab.index + this.maxSerializeForward);
           }
 
+          tab.historyTree = null;
           tab.entries = tab.entries.slice(lower, upper);
           tab.index -= lower;
         }

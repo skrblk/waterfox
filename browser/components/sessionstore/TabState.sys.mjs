@@ -5,6 +5,7 @@
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  HistoryTree: "resource://gre/modules/sessionstore/HistoryTree.sys.mjs",
   PrivacyFilter: "resource://gre/modules/sessionstore/PrivacyFilter.sys.mjs",
   TabAttributes: "resource:///modules/sessionstore/TabAttributes.sys.mjs",
   TabStateCache: "resource:///modules/sessionstore/TabStateCache.sys.mjs",
@@ -158,11 +159,11 @@ class _TabState {
     }
 
     // now we need a deep copy
-    let newEntries = structuredClone(aEntries);
+    let newEntries = structuredClone(
+      aEntries.filter(item => item.url !== "about:restartrequired")
+    );
     newEntries.forEach((item, index, object) => {
-      if (item.url === "about:restartrequired") {
-        object.splice(index, 1);
-      } else if (item.url.startsWith("about:restartrequired")) {
+      if (item.url?.startsWith("about:restartrequired")) {
         try {
           const parsedURL = new URL(item.url);
           if (parsedURL && parsedURL.searchParams.has("u")) {
@@ -217,6 +218,7 @@ class _TabState {
         // entries in place, so we don't have to worry about performing a deep
         // copy.
         tabData.entries = [...value.entries];
+        tabData.historyTree = value.historyTree || null;
 
         if (value.hasOwnProperty("index")) {
           tabData.index = value.index;
@@ -227,6 +229,38 @@ class _TabState {
         }
 
         tabData.entries = this.processAboutRestartrequiredEnties(value.entries);
+        if (
+          tabData.entries.length !== value.entries.length &&
+          lazy.HistoryTree.valid(value.historyTree, value.entries)
+        ) {
+          const kept = value.entries.flatMap((entry, index) =>
+            entry.url === "about:restartrequired" ? [] : [index]
+          );
+          const positions = new Map(
+            kept.map((index, position) => [index, position])
+          );
+          let current =
+            Number.isInteger(value.index) &&
+            value.index > 0 &&
+            value.index <= value.entries.length
+              ? value.index - 1
+              : value.entries.length - 1;
+          const oldCurrent = current;
+          while (current >= 0 && !positions.has(current)) {
+            current = value.historyTree.parents[current];
+          }
+          if (current < 0) {
+            current = lazy.HistoryTree.path(value.historyTree, oldCurrent).find(
+              index => positions.has(index)
+            );
+          }
+          tabData.historyTree = lazy.HistoryTree.remap(value.historyTree, kept);
+          tabData.index = (positions.get(current) ?? 0) + 1;
+          if (value.hasOwnProperty("requestedIndex")) {
+            tabData.requestedIndex =
+              (positions.get(value.requestedIndex - 1) ?? -1) + 1;
+          }
+        }
       } else if (!value && (key == "scroll" || key == "formdata")) {
         // [Bug 1554512]
 

@@ -59,12 +59,14 @@ class Pages(BaseHTTPRequestHandler):
             self.held_frame_entered.set()
             self.held_frame_release.wait(20)
         redirects = {"/redirect/one": "/redirect/two", "/redirect/two": "/target"}
-        redirects.update({
-            "/cross/start": f"http://localhost:{self.server.server_port}/cross/hop",
-            "/cross/hop": f"http://127.0.0.1:{self.server.server_port}/target",
-            "/redirect/held-start": "/redirect/held-hop",
-            "/redirect/held-hop": "/target",
-        })
+        redirects.update(
+            {
+                "/cross/start": f"http://localhost:{self.server.server_port}/cross/hop",
+                "/cross/hop": f"http://127.0.0.1:{self.server.server_port}/target",
+                "/redirect/held-start": "/redirect/held-hop",
+                "/redirect/held-hop": "/target",
+            }
+        )
         if self.redirects_enabled and path in redirects:
             self.send_response(302 if path.endswith("one") else 301)
             self.send_header("Location", redirects[path])
@@ -75,6 +77,10 @@ class Pages(BaseHTTPRequestHandler):
             "/client/replace": '<script>location.replace("/target")</script>',
             "/client/assign": '<script>location.assign("/target")</script>',
             "/client/meta": '<meta http-equiv="refresh" content="0;url=/target">',
+            "/tree/probe": "<script>window.initialHistoryLength = history.length;</script>",
+            "/tree/frame-probe": "<script>parent.frameInitialHistoryLength = history.length;</script>",
+            "/tree/frame-parent": "<script>window.initialHistoryLength = history.length;</script>"
+            '<iframe src="/tree/frame-probe"></iframe>',
             "/frames/static": '<iframe src="/frame/one"></iframe>',
             "/frames/branch": '<iframe src="/frame/one"></iframe>',
             "/frames/two": '<iframe src="/frame/held"></iframe>'
@@ -124,6 +130,7 @@ class HistoryTests(unittest.TestCase):
     binary = None
     output = None
     observations = []
+    tree_mode = False
 
     def chrome(self, script, args=(), asynchronous=False):
         with self.browser.using_context("chrome"):
@@ -146,13 +153,26 @@ class HistoryTests(unittest.TestCase):
             (name, value),
         )
 
+    def content(self, script, script_args=(), asynchronous=False):
+        with self.browser.using_context("content"):
+            method = (
+                self.browser.execute_async_script
+                if asynchronous
+                else self.browser.execute_script
+            )
+            return method(script, script_args=list(script_args), sandbox=None)
+
+    def content_async(self, script, script_args=()):
+        return self.content(script, script_args, asynchronous=True)
+
     def setUp(self):
         Pages.redirects_enabled = True
         Pages.post_requests = []
         Pages.hold_next_frame = False
         Pages.held_frame_entered.clear()
         Pages.held_frame_release.clear()
-        self.chrome("""
+        self.chrome(
+            """
             for (const name of ["browser.sessionhistory.max_entries",
                                 "browser.sessionhistory.max_total_viewers",
                                 "browser.sessionstore.max_serialize_back",
@@ -161,8 +181,11 @@ class HistoryTests(unittest.TestCase):
             Services.prefs.setBoolPref("dom.security.https_only_mode", false);
             Services.prefs.setBoolPref("dom.security.https_only_mode.upgrade_local", false);
             Services.prefs.setBoolPref("browser.sessionhistory.preserve_entries", true);
+            Services.prefs.setBoolPref("browser.sessionhistory.tree_enabled", arguments[0]);
             Services.prefs.setBoolPref("dom.navigation.webidl.enabled", true);
-        """)
+        """,
+            (self.tree_mode,),
+        )
         self.original_handle = self.browser.current_window_handle
         tab = self.browser.open(type="tab", focus=True)
         self.browser.switch_to_window(tab["handle"])
@@ -188,12 +211,910 @@ class HistoryTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"Navigation did not reach {expected}; at {self.browser.get_url()}")
 
+    def test_tree_new_branch_is_a_leaf(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.load("/page/b")
+        self.load("/page/c")
+        self.back()
+        self.wait_url("/page/b")
+        self.load("/page/d")
+        self.assertFalse(self.chrome("return gBrowser.selectedBrowser.canGoForward;"))
+        self.assertEqual(self.content("return history.length;"), 3)
+        self.assertCountEqual(
+            self.paths(), ["/page/a", "/page/b", "/page/c", "/page/d"]
+        )
+        self.back()
+        self.wait_url("/page/b")
+        self.chrome("gBrowser.selectedBrowser.goForward(false);")
+        self.wait_url("/page/d")
+
     def entries(self):
-        return self.chrome("""
+        return self.chrome(
+            """
             const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
             return Array.from({length: history.count}, (_, index) =>
                 history.getEntryAtIndex(index).URI.spec);
-        """)
+        """
+        )
+
+    def tree_state(self):
+        return self.chrome(
+            """
+            const h = gBrowser.selectedBrowser.browsingContext.sessionHistory;
+            return {ids: h.treeNodeIds, parents: h.treeParents,
+                    selected: h.treeSelectedChildren, path: h.activePath,
+                    index: h.index, urls: Array.from({length:h.count}, (_, i) =>
+                        h.getEntryAtIndex(i).URI.spec)};
+        """
+        )
+
+    def tree_go(self, path):
+        self.chrome(
+            """
+            const h = gBrowser.selectedBrowser.browsingContext.sessionHistory;
+            const index = Array.from({length:h.count}, (_, i) => i).find(i =>
+                h.getEntryAtIndex(i).URI.spec === arguments[0]);
+            h.gotoTreeNode(h.treeNodeIds[index], true);
+        """,
+            (self.origin + path,),
+        )
+        self.wait_url(path)
+
+    def tree_fork(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.load("/page/b")
+        self.load("/page/c")
+        self.back()
+        self.wait_url("/page/b")
+        self.load("/page/d")
+
+    def test_tree_policy_switch_reselects_the_current_native_node(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.load("/page/b")
+        self.load("/page/c")
+        self.back()
+        self.wait_url("/page/b")
+        self.load("/page/d")
+        original = self.tree_state()
+        self.set_pref("browser.sessionhistory.tree_enabled", False)
+        self.wait_for(lambda: self.content("return history.length;") == 4)
+        self.chrome(
+            "gBrowser.selectedBrowser.browsingContext.sessionHistory.gotoTreeIndex(2, true);"
+        )
+        self.wait_url("/page/c")
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.wait_for(lambda: self.content("return history.length;") == 3)
+        graph = self.tree_state()
+        self.assertEqual(graph["parents"], original["parents"])
+        self.assertEqual(graph["ids"], original["ids"])
+        self.assertEqual(graph["path"], [0, 1, 2])
+        self.back()
+        self.wait_url("/page/b")
+        self.chrome("gBrowser.selectedBrowser.goForward(false);")
+        self.wait_url("/page/c")
+
+        self.set_pref("browser.sessionhistory.preserve_entries", False)
+        self.wait_for(
+            lambda: self.content(
+                "return [history.length, navigation.entries().length, navigation.currentEntry.index];"
+            )
+            == [4, 4, 2]
+        )
+        self.set_pref("browser.sessionhistory.preserve_entries", True)
+        self.wait_for(
+            lambda: self.content(
+                "return [history.length, navigation.entries().length, navigation.currentEntry.index];"
+            )
+            == [3, 3, 2]
+        )
+        self.assertEqual(self.tree_state()["ids"], original["ids"])
+
+    def test_tree_sibling_selection_remembers_each_continuation(self):
+        self.tree_fork()
+        self.load("/page/e")
+        graph = self.tree_state()
+        paths = [urlsplit(url).path for url in graph["urls"]]
+        self.assertEqual(paths, ["/page/a", "/page/b", "/page/c", "/page/d", "/page/e"])
+        self.assertEqual(graph["parents"], [-1, 0, 1, 1, 3])
+        self.assertEqual(graph["path"], [0, 1, 3, 4])
+        self.tree_go("/page/c")
+        self.assertEqual(self.tree_state()["path"], [0, 1, 2])
+        self.back()
+        self.wait_url("/page/b")
+        self.chrome("gBrowser.selectedBrowser.goForward(false);")
+        self.wait_url("/page/c")
+        self.tree_go("/page/d")
+        self.chrome("gBrowser.selectedBrowser.goForward(false);")
+        self.wait_url("/page/e")
+        self.assertEqual(self.tree_state()["ids"], graph["ids"])
+
+    def test_tree_site_history_uses_only_selected_branch(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.content(
+            """
+            history.pushState({name:'b'}, '', '/page/b');
+            history.pushState({name:'c'}, '', '/page/c');
+        """
+        )
+        hidden_key = self.content("return navigation.currentEntry.key;")
+        self.back()
+        self.wait_url("/page/b")
+        result = self.content(
+            """
+            history.pushState({name:'d'}, '', '/page/d');
+            return {length:history.length, paths:navigation.entries().map(e =>
+                new URL(e.url).pathname), forward:navigation.canGoForward};
+        """
+        )
+        self.assertEqual(
+            result,
+            {"length": 3, "paths": ["/page/a", "/page/b", "/page/d"], "forward": False},
+        )
+        error = self.content_async(
+            """
+            const done = arguments[arguments.length - 1];
+            navigation.traverseTo(arguments[0]).finished.then(() => done('allowed'),
+                error => done(error.name));
+        """,
+            script_args=[hidden_key],
+        )
+        self.assertEqual(error, "InvalidStateError")
+        self.content("history.go(-2);")
+        self.wait_url("/page/a")
+        self.content("history.go(2);")
+        self.wait_url("/page/d")
+        self.assertEqual(self.content("return history.state.name;"), "d")
+
+    def test_tree_graph_survives_real_restart(self):
+        self.tree_fork()
+        self.set_pref("browser.startup.page", 3)
+        self.tree_go("/page/c")
+        before = self.tree_state()
+        self.tab_state()
+        self.browser.restart(in_app=True)
+        self.browser.set_context("content")
+        self.wait_url("/page/c")
+        after = self.tree_state()
+        for key in ("ids", "parents", "selected", "path"):
+            self.assertEqual(after[key], before[key])
+        self.tree_go("/page/d")
+        self.back()
+        self.wait_url("/page/b")
+
+    def test_tree_picker_renders_and_selects_a_native_sibling(self):
+        self.tree_fork()
+        result = self.chrome(
+            """
+            const done = arguments[arguments.length - 1];
+            let picker;
+            try { picker = ChromeUtils.importESModule(
+                'resource:///modules/sessionstore/HistoryTreeMenu.sys.mjs').HistoryTreeMenu; }
+            catch { done({implemented:false}); return; }
+            const panel = picker.show(window, document.getElementById('back-button'));
+            const targetURL = arguments[0];
+            panel.addEventListener('popupshown', async () => {
+                await document.l10n.translateFragment(panel);
+                const tree = panel.querySelector('[role=tree]');
+                const rows = [...panel.querySelectorAll('[role=treeitem]')];
+                done({implemented:true, rows:rows.length,
+                    current:rows.filter(row => row.getAttribute('aria-current') === 'page').length,
+                    sibling:rows.some(row => row.dataset.url === targetURL), role:tree.getAttribute('role'),
+                    height:tree.clientHeight, label:tree.getAttribute('aria-label'),
+                    siblings:rows.filter(row =>
+                        row.dataset.url.endsWith('/page/c') || row.dataset.url.endsWith('/page/d'))
+                        .map(row => [row.getAttribute('aria-posinset'), row.getAttribute('aria-setsize')])});
+            }, {once:true});
+        """,
+            (self.origin + "/page/c",),
+            asynchronous=True,
+        )
+        self.assertTrue(result["implemented"])
+        self.assertEqual(result["current"], 1)
+        self.assertTrue(result["sibling"])
+        self.assertEqual(result["role"], "tree")
+        self.assertEqual(result["label"], "Navigation history")
+        self.assertLessEqual(result["height"], result["rows"] * 28 + 1)
+        self.assertEqual(result["siblings"], [["1", "2"], ["2", "2"]])
+        self.chrome(
+            """
+            const panel = document.getElementById('history-tree-popup');
+            [...panel.querySelectorAll('[role=treeitem]')].find(row =>
+                row.dataset.url === arguments[0]).click();
+        """,
+            (self.origin + "/page/c",),
+        )
+        self.wait_url("/page/c")
+
+    def test_tree_native_history_menu_supports_keyboard_branch_selection(self):
+        self.tree_fork()
+        result = self.chrome(
+            """
+            const done = arguments[arguments.length - 1];
+            document.addEventListener('popupshown', function shown(event) {
+                if (event.target.id !== 'history-tree-popup') return;
+                document.removeEventListener('popupshown', shown);
+                const tree = event.target.querySelector('[role=tree]');
+                tree.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowUp', bubbles:true}));
+                const id = tree.getAttribute('aria-activedescendant');
+                const path = new URL(document.getElementById(id).dataset.url).pathname;
+                tree.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+                done(path);
+            });
+            const button = document.getElementById('back-button');
+            button.querySelector('menupopup').openPopup(button, 'after_start');
+        """,
+            asynchronous=True,
+        )
+        self.assertEqual(result, "/page/c")
+        self.wait_url("/page/c")
+
+    def test_tree_retains_sibling_states_at_the_same_address(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.content(
+            """
+            history.pushState({name:'b'}, '', '/page/same');
+            history.pushState({name:'c'}, '', '/page/same');
+        """
+        )
+        before = self.tree_state()
+        self.back()
+        self.wait_for(lambda: self.content("return history.state.name;") == "b")
+        self.content("history.pushState({name:'d'}, '', '/page/same');")
+        graph = self.tree_state()
+        self.assertEqual(graph["parents"], [-1, 0, 1, 1])
+        self.assertEqual(len(set(graph["ids"])), 4)
+        self.content(
+            """
+            window.treeChanges = [];
+            navigation.addEventListener('currententrychange', event => {
+                treeChanges.push({from:event.from.index,
+                    index:navigation.currentEntry.index,
+                    length:history.length,
+                    paths:navigation.entries().map(entry => new URL(entry.url).pathname)});
+            });
+        """
+        )
+        self.chrome(
+            "gBrowser.selectedBrowser.browsingContext.sessionHistory.gotoTreeNode(arguments[0], true);",
+            (before["ids"][2],),
+        )
+        self.wait_for(lambda: self.content("return history.state.name;") == "c")
+        self.assertEqual(
+            self.content("return treeChanges[0];"),
+            {
+                "from": -1,
+                "index": 2,
+                "length": 3,
+                "paths": ["/page/a", "/page/same", "/page/same"],
+            },
+        )
+        self.back()
+        self.wait_for(lambda: self.content("return history.state.name;") == "b")
+
+    def test_tree_explicit_clear_removes_siblings_and_keeps_current_identity(self):
+        self.tree_fork()
+        before = self.tree_state()
+        self.chrome("gBrowser.selectedBrowser.purgeSessionHistory();")
+        after = self.tree_state()
+        self.assertEqual(after["parents"], [-1])
+        self.assertEqual(after["ids"], [before["ids"][before["index"]]])
+        self.assertFalse(
+            self.chrome(
+                "return gBrowser.selectedBrowser.canGoBack || gBrowser.selectedBrowser.canGoForward;"
+            )
+        )
+        self.assertEqual(len(self.tab_state()["entries"]), 1)
+
+    def test_tree_global_cap_keeps_a_forest_without_joining_siblings(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.set_pref("browser.sessionhistory.max_entries", 3)
+        self.load("/page/a")
+        self.load("/page/b")
+        self.load("/page/c")
+        self.back()
+        self.wait_url("/page/b")
+        self.load("/page/d")
+        graph = self.tree_state()
+        self.assertEqual(self.paths(), ["/page/b", "/page/c", "/page/d"])
+        self.assertEqual(graph["parents"], [-1, 0, 0])
+        self.load("/page/e")
+        self.assertEqual(self.tree_state()["parents"], [-1, -1, 1])
+        self.back()
+        self.wait_url("/page/d")
+        self.assertFalse(self.chrome("return gBrowser.selectedBrowser.canGoBack;"))
+        self.assertFalse(
+            self.chrome(
+                "return gBrowser.selectedBrowser.canGoBackIgnoringUserInteraction;"
+            )
+        )
+        self.assertTrue(self.chrome("return gBrowser.selectedBrowser.canGoForward;"))
+        self.tree_go("/page/c")
+        self.assertFalse(
+            self.chrome(
+                "return gBrowser.selectedBrowser.canGoBack || gBrowser.selectedBrowser.canGoForward;"
+            )
+        )
+        self.set_pref("browser.sessionhistory.tree_enabled", False)
+        self.wait_for(
+            lambda: self.chrome("return gBrowser.selectedBrowser.canGoForward;")
+        )
+
+    def test_tree_reader_mode_checks_the_selected_neighbor(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.load("/page/b")
+        self.back()
+        self.wait_url("/page/a")
+        self.load("/page/c")
+        self.back()
+        self.wait_url("/page/a")
+
+        def matches(path, offset):
+            return self.chrome(
+                """
+                const actor = gBrowser.selectedBrowser.browsingContext.currentWindowGlobal
+                    .getActor('AboutReader');
+                return actor.hasReaderModeEntryAtOffset(arguments[0], arguments[1]);
+            """,
+                (self.origin + path, offset),
+            )
+
+        self.assertTrue(matches("/page/c", 1))
+        self.assertFalse(matches("/page/b", 1))
+        self.tree_go("/page/c")
+        self.assertTrue(matches("/page/a", -1))
+        self.assertFalse(matches("/page/b", -1))
+        self.set_pref("browser.sessionhistory.tree_enabled", False)
+        self.assertTrue(matches("/page/b", -1))
+
+    def test_tree_storage_access_heuristic_ignores_sibling_branches(self):
+        prefs = {
+            "browser.sessionhistory.tree_enabled": True,
+            "network.cookie.cookieBehavior": 5,
+            "privacy.bounceTrackingProtection.mode": 3,
+            "privacy.antitracking.enableWebcompat": True,
+            "privacy.restrict3rdpartystorage.heuristic.navigation": True,
+            "privacy.restrict3rdpartystorage.heuristic.recently_visited": False,
+            "privacy.restrict3rdpartystorage.heuristic.window_open": False,
+            "privacy.restrict3rdpartystorage.heuristic.opened_window_after_interaction": False,
+            "privacy.restrict3rdpartystorage.heuristic.redirect": False,
+            "privacy.restrict3rdpartystorage.heuristic.exclude_third_party_trackers": False,
+            "network.dns.localDomains": "x.example.org,a.example.com,d.example.net",
+            "network.trr.mode": 5,
+            "dom.security.https_first": False,
+        }
+        saved = self.chrome(
+            """
+            return arguments[0].map(name => {
+                const user = Services.prefs.prefHasUserValue(name);
+                const type = Services.prefs.getPrefType(name);
+                const value = !user ? null : type === Ci.nsIPrefBranch.PREF_BOOL
+                    ? Services.prefs.getBoolPref(name) : type === Ci.nsIPrefBranch.PREF_INT
+                    ? Services.prefs.getIntPref(name) : Services.prefs.getStringPref(name);
+                return {name, user, value};
+            });
+        """,
+            (list(prefs),),
+        )
+        original = self.browser.current_window_handle
+        port = urlsplit(self.origin).port
+        sites = {
+            key: f"http://{host}:{port}"
+            for key, host in {
+                "x": "x.example.org",
+                "a": "a.example.com",
+                "d": "d.example.net",
+            }.items()
+        }
+
+        def wait_committed(url):
+            def committed():
+                if (
+                    self.browser.get_url() != url
+                    or self.content("return document.readyState;") != "complete"
+                ):
+                    return False
+                graph = self.tree_state()
+                return graph["index"] >= 0 and graph["urls"][graph["index"]] == url
+
+            self.wait_for(committed)
+
+        try:
+            for name, value in prefs.items():
+                self.set_pref(name, value)
+            for branched in (False, True):
+                tab = self.browser.open(type="tab", focus=True)
+                self.browser.switch_to_window(tab["handle"])
+                try:
+                    self.chrome("Services.perms.removeAll();")
+                    if branched:
+                        self.browser.navigate(sites["x"] + "/heuristic/x")
+                        wait_committed(sites["x"] + "/heuristic/x")
+                    self.browser.navigate(sites["a"] + "/heuristic/a")
+                    wait_committed(sites["a"] + "/heuristic/a")
+                    if branched:
+                        self.back()
+                        wait_committed(sites["x"] + "/heuristic/x")
+                    self.browser.navigate(sites["d"] + "/heuristic/d")
+                    wait_committed(sites["d"] + "/heuristic/d")
+                    graph = self.tree_state()
+                    self.assertEqual(
+                        graph["parents"], [-1, 0, 0] if branched else [-1, 0]
+                    )
+                    self.assertEqual(graph["path"], [0, 2] if branched else [0, 1])
+                    active = self.browser.execute_script(
+                        """
+                        document.userInteractionForTesting();
+                        document.notifyUserGestureActivation();
+                        const active = navigator.userActivation.isActive;
+                        const link = document.createElement('a');
+                        link.href = arguments[0];
+                        link.textContent = 'Continue';
+                        document.body.append(link);
+                        link.click();
+                        return active;
+                    """,
+                        script_args=[sites["a"] + "/heuristic/a"],
+                        sandbox="system",
+                    )
+                    self.assertTrue(active)
+                    self.wait_for(
+                        lambda: self.browser.get_url() == sites["a"] + "/heuristic/a"
+                        and self.content("return document.readyState;") == "complete"
+                    )
+                    permission = self.chrome(
+                        """
+                        const principal = gBrowser.selectedBrowser.contentPrincipal;
+                        const type = '3rdPartyStorage^' + arguments[1];
+                        return {capability:Services.perms.testPermissionFromPrincipal(principal, type),
+                            count:[...Services.perms.all].filter(permission =>
+                                permission.type === type &&
+                                permission.capability === Services.perms.ALLOW_ACTION).length};
+                    """,
+                        (sites["a"], sites["d"]),
+                    )
+                    self.observations.append(
+                        {
+                            "storageHeuristic": {
+                                "branched": branched,
+                                "parents": graph["parents"],
+                                "permission": permission,
+                            }
+                        }
+                    )
+                    self.assertEqual(
+                        permission,
+                        (
+                            {"capability": 0, "count": 0}
+                            if branched
+                            else {"capability": 1, "count": 1}
+                        ),
+                    )
+                finally:
+                    self.browser.close()
+                    self.browser.switch_to_window(original)
+        finally:
+            self.chrome(
+                """
+                for (const {name, user, value} of arguments[0]) {
+                    if (!user) Services.prefs.clearUserPref(name);
+                    else if (typeof value === 'boolean') Services.prefs.setBoolPref(name, value);
+                    else if (typeof value === 'number') Services.prefs.setIntPref(name, value);
+                    else Services.prefs.setStringPref(name, value);
+                }
+            """,
+                (saved,),
+            )
+
+    def test_tree_delayed_load_retains_its_original_fork_point(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        Pages.hold_next_frame = True
+        self.content("location.href = '/redirect/held-start';")
+        self.assertTrue(Pages.held_frame_entered.wait(10))
+        self.content("history.pushState({}, '', '/page/interim');")
+        Pages.held_frame_release.set()
+        self.wait_url("/target")
+        graph = self.tree_state()
+        paths = [urlsplit(url).path for url in graph["urls"]]
+        start = paths.index("/redirect/held-start")
+        self.assertEqual(graph["parents"][start], paths.index("/page/a"))
+        self.assertIn("/page/interim", paths)
+
+    def test_tree_serialization_limit_retains_the_selected_forward_branch(self):
+        self.set_pref("browser.startup.page", 3)
+        self.set_pref("browser.sessionstore.max_serialize_forward", 1)
+        self.browser.restart(in_app=True)
+        self.browser.set_context("content")
+        try:
+            self.tree_fork()
+            self.back()
+            self.wait_url("/page/b")
+            self.tab_state()
+            self.browser.restart(in_app=True)
+            self.browser.set_context("content")
+            self.wait_url("/page/b")
+            self.chrome("gBrowser.selectedBrowser.goForward(false);")
+            self.wait_url("/page/d")
+            self.assertIn("/page/c", self.paths())
+        finally:
+            self.set_pref("browser.sessionstore.max_serialize_forward", -1)
+            self.browser.restart(in_app=True)
+            self.browser.set_context("content")
+
+    def test_tree_new_document_immediately_sees_selected_path_length(self):
+        self.tree_fork()
+        self.back()
+        self.wait_url("/page/b")
+        self.load("/tree/probe")
+        self.assertEqual(self.content("return window.initialHistoryLength;"), 3)
+
+    def test_tree_first_document_and_first_frame_share_one_joint_root(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/tree/frame-parent")
+        self.assertEqual(
+            self.content("return [initialHistoryLength, frameInitialHistoryLength];"),
+            [1, 1],
+        )
+        self.assertEqual(len(self.tree_state()["ids"]), 1)
+
+    def test_tree_works_with_the_navigation_api_disabled(self):
+        self.set_pref("dom.navigation.webidl.enabled", False)
+        self.tree_fork()
+        self.assertEqual(self.content("return history.length;"), 3)
+        self.tree_go("/page/c")
+        self.back()
+        self.wait_url("/page/b")
+        self.chrome("gBrowser.selectedBrowser.goForward(false);")
+        self.wait_url("/page/c")
+        self.assertEqual(self.tree_state()["parents"], [-1, 0, 1, 1])
+
+    def test_tree_traversal_events_see_projected_cursor_and_length(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.content(
+            """
+            history.pushState({}, '', '/page/b');
+            history.pushState({}, '', '/page/c');
+        """
+        )
+        self.back()
+        self.wait_url("/page/b")
+        self.content(
+            """
+            history.pushState({}, '', '/page/d');
+            history.pushState({}, '', '/page/e');
+            window.treeEvents = [];
+            addEventListener('popstate', () => treeEvents.push({length:history.length,
+                index:navigation.currentEntry.index}));
+        """
+        )
+        self.tree_go("/page/c")
+        self.assertEqual(
+            self.content("return treeEvents;"),
+            [{"length": 3, "index": 2}],
+        )
+        self.back()
+        self.wait_url("/page/b")
+        self.assertEqual(
+            self.content("return treeEvents[1];"),
+            {"length": 3, "index": 1},
+        )
+
+    def test_tree_picker_traversal_honors_same_document_navigation_cancellation(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.content(
+            """
+            history.pushState({}, '', '/page/b');
+            history.pushState({}, '', '/page/c');
+        """
+        )
+        self.back()
+        self.wait_url("/page/b")
+        self.content("history.pushState({}, '', '/page/d');")
+        before = self.tree_state()
+        self.content(
+            """
+            window.treeNavigateCount = 0;
+            navigation.addEventListener('navigate', event => {
+                ++window.treeNavigateCount;
+                event.preventDefault();
+            }, {once:true});
+        """
+        )
+        self.chrome(
+            """
+            const h = gBrowser.selectedBrowser.browsingContext.sessionHistory;
+            h.gotoTreeNode(h.treeNodeIds[2], true);
+        """
+        )
+        self.wait_for(
+            lambda: self.browser.get_url().endswith("/page/c")
+            or self.content("return window.treeNavigateCount > 0;")
+        )
+        self.assertEqual(self.browser.get_url(), self.origin + "/page/d")
+        self.assertEqual(self.content("return window.treeNavigateCount;"), 1)
+        self.assertEqual(self.tree_state()["path"], before["path"])
+
+    def test_tree_hidden_branch_navigate_event_has_its_saved_destination(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.content_async(
+            """
+            const done = arguments[arguments.length - 1];
+            navigation.navigate('#b', {state:{name:'b'}}).finished.then(() =>
+                navigation.navigate('#c', {state:{name:'c'}}).finished).then(() => done());
+        """
+        )
+        key = self.content("return navigation.currentEntry.key;")
+        self.back()
+        self.wait_url("/page/a#b")
+        self.content_async(
+            """
+            const done = arguments[arguments.length - 1];
+            navigation.navigate('#d', {state:{name:'d'}}).finished.then(() => done());
+        """
+        )
+        graph = self.tree_state()
+        self.content(
+            """
+            window.treeDestination = null;
+            navigation.addEventListener('navigate', event => {
+                window.treeDestination = {key:event.destination.key,
+                    index:event.destination.index, state:event.destination.getState()};
+                event.preventDefault();
+            }, {once:true});
+        """
+        )
+        self.chrome(
+            "gBrowser.selectedBrowser.browsingContext.sessionHistory.gotoTreeNode(arguments[0], true);",
+            (graph["ids"][2],),
+        )
+        self.wait_for(
+            lambda: self.content("return treeDestination !== null;")
+            or self.browser.get_url().endswith("#c")
+        )
+        self.assertEqual(
+            self.content("return treeDestination;"),
+            {"key": key, "index": 2, "state": {"name": "c"}},
+        )
+        self.assertEqual(self.browser.get_url(), self.origin + "/page/a#d")
+        self.assertEqual(self.tree_state()["path"], graph["path"])
+
+    def test_tree_branch_reconciliation_preserves_shared_objects_and_disposes_leaves_once(
+        self,
+    ):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.content(
+            """
+            history.pushState({name:'b'}, '', '/page/b');
+            history.pushState({name:'c'}, '', '/page/c');
+            window.savedTreeEntries = navigation.entries();
+            window.disposedTreeEntries = [];
+            for (const entry of savedTreeEntries)
+                entry.addEventListener('dispose', () => disposedTreeEntries.push(new URL(entry.url).pathname));
+        """
+        )
+        self.back()
+        self.wait_url("/page/b")
+        self.content(
+            """
+            history.pushState({name:'d'}, '', '/page/d');
+            window.savedTreeD = navigation.currentEntry;
+            savedTreeD.addEventListener('dispose', () => disposedTreeEntries.push('/page/d'));
+            navigation.addEventListener('currententrychange', event => window.lastTreeFrom = event.from);
+        """
+        )
+        self.tree_go("/page/c")
+        self.wait_for(
+            lambda: self.content("return disposedTreeEntries.includes('/page/d');")
+        )
+        self.assertEqual(
+            self.content(
+                """
+            const entries = navigation.entries();
+            return {shared:entries[0] === savedTreeEntries[0] && entries[1] === savedTreeEntries[1],
+                replaced:entries[2] !== savedTreeEntries[2], from:lastTreeFrom === savedTreeD,
+                disposed:disposedTreeEntries, oldIndex:savedTreeD.index};
+        """
+            ),
+            {
+                "shared": True,
+                "replaced": True,
+                "from": True,
+                "disposed": ["/page/c", "/page/d"],
+                "oldIndex": -1,
+            },
+        )
+
+    def test_tree_iframe_steps_have_distinct_joint_node_identities(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/frames/static")
+        for path in ("/frame/two", "/frame/three"):
+            self.content("frames[0].location.href = arguments[0];", script_args=[path])
+            self.wait_for(
+                lambda: self.content("return frames[0].location.pathname;") == path
+            )
+        self.back()
+        self.wait_for(
+            lambda: self.content("return frames[0].location.pathname;") == "/frame/two"
+        )
+        self.content("frames[0].location.href = '/frame/branch';")
+        self.wait_for(
+            lambda: self.content("return frames[0].location.pathname;")
+            == "/frame/branch"
+        )
+        graph = self.tree_state()
+        self.assertEqual(graph["parents"], [-1, 0, 1, 1])
+        self.assertEqual(len(set(graph["ids"])), 4)
+        self.assertEqual(len(self.navigation_paths()), 1)
+        self.chrome(
+            "gBrowser.selectedBrowser.browsingContext.sessionHistory.gotoTreeNode(arguments[0], true);",
+            (graph["ids"][2],),
+        )
+        self.wait_for(
+            lambda: self.content("return frames[0].location.pathname;")
+            == "/frame/three"
+        )
+        self.back()
+        self.wait_for(
+            lambda: self.content("return frames[0].location.pathname;") == "/frame/two"
+        )
+
+    def test_tree_removed_frame_steps_move_cursor_without_recreating_dom(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/frames/static")
+        self.content("frames[0].location.href = '/frame/two';")
+        self.wait_for(
+            lambda: self.content("return frames[0].location.pathname;") == "/frame/two"
+        )
+        graph = self.tree_state()
+        self.content("document.querySelector('iframe').remove();")
+        self.back()
+        self.wait_for(lambda: self.tree_state()["index"] == 0)
+        self.assertEqual(self.content("return frames.length;"), 0)
+        self.chrome(
+            "gBrowser.selectedBrowser.browsingContext.sessionHistory.gotoTreeNode(arguments[0], true);",
+            (graph["ids"][1],),
+        )
+        self.wait_for(lambda: self.tree_state()["index"] == 1)
+        self.assertEqual(self.content("return frames.length;"), 0)
+
+    def test_tree_duplicate_preserves_shared_past_and_alternative_branches(self):
+        self.tree_fork()
+        original = self.browser.current_window_handle
+        original_handles = set(self.browser.window_handles)
+        before = self.tree_state()
+        self.chrome(
+            """
+            const {SessionStore} = ChromeUtils.importESModule(
+                'resource:///modules/sessionstore/SessionStore.sys.mjs');
+            SessionStore.duplicateTab(window, gBrowser.selectedTab, 0, true,
+                {historyNodeId:arguments[0], inBackground:false});
+        """,
+            (before["ids"][2],),
+        )
+        self.wait_for(
+            lambda: len(self.browser.window_handles) == len(original_handles) + 1
+        )
+        duplicate = next(iter(set(self.browser.window_handles) - original_handles))
+        try:
+            self.browser.switch_to_window(duplicate)
+            self.wait_url("/page/c")
+            graph = self.tree_state()
+            self.assertEqual(graph["parents"], before["parents"])
+            self.assertEqual(graph["ids"], before["ids"])
+            self.assertEqual(graph["path"], [0, 1, 2])
+            self.back()
+            self.wait_url("/page/b")
+        finally:
+            self.browser.close()
+            self.browser.switch_to_window(original)
+        self.assertEqual(self.browser.get_url(), self.origin + "/page/d")
+        self.assertEqual(self.tree_state()["path"], before["path"])
+
+    def test_tree_picker_virtualizes_large_history_and_rejects_stale_rows(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.content(
+            """
+            for (let index = 0; index < 300; ++index)
+                history.pushState({}, '', '/page/' + index);
+        """
+        )
+        result = self.chrome(
+            """
+            const done = arguments[arguments.length - 1];
+            const {HistoryTreeMenu} = ChromeUtils.importESModule(
+                'resource:///modules/sessionstore/HistoryTreeMenu.sys.mjs');
+            const panel = HistoryTreeMenu.show(window, document.getElementById('back-button'));
+            panel.addEventListener('popupshown', () => {
+                const rows = [...panel.querySelectorAll('[role=treeitem]')];
+                const current = rows.find(row => row.getAttribute('aria-current') === 'page');
+                done({count:rows.length, current:!!current});
+            }, {once:true});
+        """,
+            asynchronous=True,
+        )
+        self.assertLess(result["count"], 40)
+        self.assertTrue(result["current"])
+        self.chrome(
+            """
+            const panel = document.getElementById('history-tree-popup');
+            window.oldHistoryRow = panel.querySelector('[role=treeitem]');
+            gBrowser.selectedBrowser.purgeSessionHistory();
+            window.oldHistoryRow.click();
+        """
+        )
+        self.assertEqual(self.browser.get_url(), self.origin + "/page/299")
+        self.assertEqual(len(self.entries()), 1)
+
+    def test_tree_picker_closes_when_purge_removes_the_current_root(self):
+        self.set_pref("browser.sessionhistory.tree_enabled", True)
+        self.load("/page/a")
+        self.load("/page/b")
+        self.load("/page/c")
+        self.tree_go("/page/a")
+        result = self.chrome(
+            """
+            const done = arguments[arguments.length - 1];
+            const {HistoryTreeMenu} = ChromeUtils.importESModule(
+                'resource:///modules/sessionstore/HistoryTreeMenu.sys.mjs');
+            const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
+            const panel = HistoryTreeMenu.show(window, document.getElementById('back-button'));
+            panel.addEventListener('popupshown', () => {
+                const revision = history.treeRevision;
+                history.purgeHistory(1);
+                panel.querySelector('[role=tree]').dispatchEvent(new Event('scroll'));
+                done({changed:history.treeRevision > revision, index:history.index,
+                    count:history.count, closing:panel.state !== 'open'});
+            }, {once:true});
+        """,
+            asynchronous=True,
+        )
+        self.assertEqual(
+            result, {"changed": True, "index": -1, "count": 2, "closing": True}
+        )
+
+    def test_tree_picker_compressed_scroll_keeps_the_first_node_visible(self):
+        result = self.chrome(
+            """
+            const done = arguments[arguments.length - 1];
+            const {HistoryTreeMenu} = ChromeUtils.importESModule(
+                'resource:///modules/sessionstore/HistoryTreeMenu.sys.mjs');
+            const count = 300000;
+            const history = {treeEnabled:true, count, index:0, treeRevision:1,
+                treeNodeIds:Array.from({length:count}, (_, i) =>
+                    `{00000000-0000-4000-8000-${String(i).padStart(12, '0')}}`),
+                treeParents:Array.from({length:count}, (_, i) => i - 1),
+                treeSelectedChildren:Array.from({length:count}, (_, i) => i + 1 < count ? i + 1 : -1),
+                activePath:Array.from({length:count}, (_, i) => i),
+                getEntryAtIndex(index) { return {URI:{spec:'https://example.com/' + index}, title:'Node ' + index}; }};
+            const browser = {browsingContext:{sessionHistory:history}};
+            const panel = HistoryTreeMenu.show({document, gBrowser:{selectedBrowser:browser,
+                tabContainer:gBrowser.tabContainer}}, document.getElementById('back-button'));
+            panel.addEventListener('popupshown', () => {
+                const tree = panel.querySelector('[role=tree]');
+                tree.dispatchEvent(new KeyboardEvent('keydown', {key:'Home', bubbles:true}));
+                const first = panel.querySelector('[aria-current=page]');
+                const rowRect = first.getBoundingClientRect();
+                const treeRect = tree.getBoundingClientRect();
+                done({visible:rowRect.top >= treeRect.top && rowRect.bottom <= treeRect.bottom,
+                    count:panel.querySelectorAll('[role=treeitem]').length});
+                panel.hidePopup();
+            }, {once:true});
+        """,
+            asynchronous=True,
+        )
+        self.assertLess(result["count"], 40)
+        self.assertTrue(result["visible"])
 
     def paths(self):
         return [
@@ -209,20 +1130,24 @@ class HistoryTests(unittest.TestCase):
         self.fail("Timed out waiting for history change")
 
     def navigation_paths(self):
-        return self.browser.execute_script("""
+        return self.browser.execute_script(
+            """
             return navigation.entries().map(entry => new URL(entry.url).pathname);
-        """)
+        """
+        )
 
     def loaded_navigation_snapshot(self, expected_url):
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            receipt = self.browser.execute_script("""
+            receipt = self.browser.execute_script(
+                """
                 return {href: location.href, readyState: document.readyState,
                     current: navigation.currentEntry ? {
                         url: navigation.currentEntry.url,
                         index: navigation.currentEntry.index} : null,
                     entries: navigation.entries().map(entry => new URL(entry.url).pathname)};
-            """)
+            """
+            )
             if (
                 receipt is not None
                 and receipt["href"] == expected_url
@@ -233,7 +1158,8 @@ class HistoryTests(unittest.TestCase):
         self.fail(f"No complete navigation snapshot for {expected_url}")
 
     def entry_trees(self):
-        return self.chrome("""
+        return self.chrome(
+            """
             const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
             function tree(entry) {
                 return {url: entry.URI.spec,
@@ -244,7 +1170,8 @@ class HistoryTests(unittest.TestCase):
             }
             return Array.from({length: history.count}, (_, i) =>
                 tree(history.getEntryAtIndex(i)));
-        """)
+        """
+        )
 
     def tab_state(self):
         return self.chrome(
@@ -390,24 +1317,28 @@ class HistoryTests(unittest.TestCase):
 
     def test_same_address_refresh_creates_new_entry(self):
         self.load("/page/refresh")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             const meta = document.createElement("meta");
             meta.httpEquiv = "refresh";
             meta.content = "0";
             document.head.append(meta);
-        """)
+        """
+        )
         self.wait_for(lambda: len(self.paths()) >= 2)
         self.assertEqual(self.paths(), ["/page/refresh"] * 2)
 
     def test_same_address_iframe_refresh_creates_new_entry(self):
         self.load("/frames/static")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             const doc = frames[0].document;
             const meta = doc.createElement("meta");
             meta.httpEquiv = "refresh";
             meta.content = "0";
             doc.head.append(meta);
-        """)
+        """
+        )
         self.wait_for(lambda: len(self.paths()) >= 2)
         self.assertEqual(self.paths(), ["/frames/static"] * 2)
         self.assertEqual(
@@ -436,13 +1367,15 @@ class HistoryTests(unittest.TestCase):
         self.set_pref("browser.sessionhistory.max_total_viewers", 0)
         self.set_pref("browser.startup.page", 3)
         self.load("/frames/dynamic")
-        self.browser.execute_async_script("""
+        self.browser.execute_async_script(
+            """
             const done = arguments[arguments.length - 1];
             const frame = document.createElement("iframe");
             frame.onload = () => done();
             frame.src = "/frame/one";
             document.body.append(frame);
-        """)
+        """
+        )
         self.browser.execute_script('frames[0].location.href = "/frame/two";')
         self.wait_for(
             lambda: self.browser.execute_script(
@@ -510,53 +1443,69 @@ class HistoryTests(unittest.TestCase):
     def test_static_frames_restore_beside_retained_dynamic_frames(self):
         self.set_pref("browser.sessionhistory.max_total_viewers", 0)
         self.load("/frames/mixed")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             document.getElementById("last").contentWindow.location.href = "/frame/last-next";
-        """)
+        """
+        )
         self.wait_for(
-            lambda: self.browser.execute_script("""
+            lambda: self.browser.execute_script(
+                """
             return document.getElementById("last").contentWindow.location.pathname == "/frame/last-next";
-        """)
+        """
+            )
         )
         self.load("/page/after")
         self.back()
         self.wait_url("/frames/mixed")
         self.wait_for(
-            lambda: self.browser.execute_script("""
-            return document.getElementById("last").contentWindow.location.pathname == "/frame/last-next";
-        """)
+            lambda: self.browser.execute_script(
+                """
+            return document.getElementById("last")?.contentWindow.location.pathname == "/frame/last-next";
+        """
+            )
         )
 
     def test_static_frames_match_when_dynamic_creation_order_changes(self):
         self.set_pref("browser.sessionhistory.max_total_viewers", 0)
         self.load("/frames/reordered")
         self.wait_for(lambda: self.browser.execute_script("return frames.length == 3"))
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             document.getElementById("first").contentWindow.location.href = "/frame/first-next";
-        """)
-        self.wait_for(
-            lambda: self.browser.execute_script("""
-            return document.getElementById("first").contentWindow.location.pathname == "/frame/first-next";
-        """)
+        """
         )
-        self.browser.execute_script("""
+        self.wait_for(
+            lambda: self.browser.execute_script(
+                """
+            return document.getElementById("first").contentWindow.location.pathname == "/frame/first-next";
+        """
+            )
+        )
+        self.browser.execute_script(
+            """
             document.getElementById("last").contentWindow.location.href = "/frame/last-next";
             sessionStorage.earlyDynamic = "yes";
-        """)
+        """
+        )
         self.wait_for(
-            lambda: self.browser.execute_script("""
+            lambda: self.browser.execute_script(
+                """
             return document.getElementById("last").contentWindow.location.pathname == "/frame/last-next";
-        """)
+        """
+            )
         )
         self.load("/page/after")
         self.back()
         self.wait_url("/frames/reordered")
         self.wait_for(
-            lambda: self.browser.execute_script("""
+            lambda: self.browser.execute_script(
+                """
             return frames.length == 3 &&
                 document.getElementById("first").contentWindow.location.pathname == "/frame/first-next" &&
                 document.getElementById("last").contentWindow.location.pathname == "/frame/last-next";
-        """)
+        """
+            )
         )
         self.assertEqual(
             self.browser.execute_script("return frames[0].location.pathname"),
@@ -565,7 +1514,8 @@ class HistoryTests(unittest.TestCase):
 
     def test_trailing_empty_frame_slot_survives_session_round_trip(self):
         self.load("/frames/static")
-        result = self.chrome("""
+        result = self.chrome(
+            """
             const {SessionHistory} = ChromeUtils.importESModule(
                 "resource://gre/modules/sessionstore/SessionHistory.sys.mjs");
             const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
@@ -577,7 +1527,8 @@ class HistoryTests(unittest.TestCase):
             const restored = history.getEntryAtIndex(history.index);
             return {before, after: restored.childCount,
                     lastIsNull: restored.GetChildAt(restored.childCount - 1) === null};
-        """)
+        """
+        )
         self.assertEqual(result["before"], 2)
         self.assertEqual(result["after"], 2)
         self.assertTrue(result["lastIsNull"])
@@ -585,10 +1536,12 @@ class HistoryTests(unittest.TestCase):
     def test_removed_static_sibling_does_not_renumber_retained_frames(self):
         self.set_pref("browser.sessionhistory.max_total_viewers", 0)
         self.load("/frames/pair")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             document.getElementById("first").remove();
             document.getElementById("last").contentWindow.location.href = "/frame/last-next";
-        """)
+        """
+        )
         self.wait_for(
             lambda: self.browser.execute_script(
                 'return frames[0].location.pathname == "/frame/last-next"'
@@ -598,15 +1551,18 @@ class HistoryTests(unittest.TestCase):
         self.back()
         self.wait_url("/frames/pair")
         self.wait_for(
-            lambda: self.browser.execute_script("""
+            lambda: self.browser.execute_script(
+                """
             return frames.length == 2 &&
                 document.getElementById("last").contentWindow.location.pathname == "/frame/last-next";
-        """)
+        """
+            )
         )
 
     def test_mixed_frame_slot_round_trip_keeps_null_provenance(self):
         self.load("/frames/static")
-        result = self.chrome("""
+        result = self.chrome(
+            """
             const {SessionHistory} = ChromeUtils.importESModule(
                 "resource://gre/modules/sessionstore/SessionHistory.sys.mjs");
             const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
@@ -622,7 +1578,8 @@ class HistoryTests(unittest.TestCase):
             const serialized = SessionHistory.collectFromParent(entry.URI, true, history);
             return serialized.entries[serialized.index - 1].children.map(child => child.url ?
                 {ordinal: child.staticChildOrdinal ?? -1, dynamic: !!child.dynamicallyAdded} : null);
-        """)
+        """
+        )
         self.assertEqual(
             result,
             [
@@ -699,10 +1656,12 @@ class HistoryTests(unittest.TestCase):
             ),
             keys,
         )
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             const key = navigation.entries()[2].key;
             setTimeout(() => navigation.traverseTo(key), 0);
-        """)
+        """
+        )
         self.wait_url("/frames/static")
         try:
             self.wait_for(
@@ -753,26 +1712,50 @@ class HistoryTests(unittest.TestCase):
                 'return frames[0].location.pathname == "/frame/held"'
             )
         )
-        snapshot = self.chrome("""
+        snapshot = self.chrome(
+            """
             const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
             return {index: history.index, current: history.getEntryAtIndex(history.index).URI.spec};
-        """)
+        """
+        )
         self.assertEqual(self.browser.get_url(), snapshot["current"])
-        self.assertEqual(snapshot["index"], 2)
+        self.assertEqual(snapshot["index"], 3 if self.tree_mode else 2)
         self.assertEqual(
             self.paths(),
-            ["/frames/static", "/page/branch", "/page/branch", "/frames/static"],
+            (
+                ["/frames/static", "/frames/static", "/page/branch", "/page/branch"]
+                if self.tree_mode
+                else [
+                    "/frames/static",
+                    "/page/branch",
+                    "/page/branch",
+                    "/frames/static",
+                ]
+            ),
         )
+        if self.tree_mode:
+            graph = self.tree_state()
+            self.assertEqual(graph["parents"], [-1, 0, 0, 2])
+            self.assertEqual(graph["path"], [0, 2, 3])
+            for index in (1, 3):
+                self.assertEqual(
+                    urlsplit(self.entry_trees()[index]["children"][0]["url"]).path,
+                    "/frame/held",
+                )
         self.wait_for(
             lambda: (
                 self.navigation_paths()
-                == ["/frames/static", "/page/branch", "/frames/static"]
+                == (
+                    ["/frames/static", "/page/branch"]
+                    if self.tree_mode
+                    else ["/frames/static", "/page/branch", "/frames/static"]
+                )
             )
         )
         keys = self.browser.execute_script(
             "return navigation.entries().map(entry => entry.key)"
         )
-        self.assertEqual(len(set(keys)), 3)
+        self.assertEqual(len(set(keys)), 2 if self.tree_mode else 3)
         self.assertEqual(
             self.browser.execute_script("return navigation.currentEntry.index"), 1
         )
@@ -851,27 +1834,31 @@ class HistoryTests(unittest.TestCase):
                 self.observations
                 and self.observations[-1]["test"] == self._testMethodName
             ):
-                self.observations[-1]["frameAfterStop"] = (
-                    self.browser.execute_script("""
+                self.observations[-1]["frameAfterStop"] = self.browser.execute_script(
+                    """
                     return {request: Number(frames[0].document.documentElement.dataset.request),
                         url: frames[0].location.href,
                         readyState: frames[0].document.readyState,
                         body: frames[0].document.body.innerHTML};
-                """)
+                """
                 )
-            self.chrome("""
+            self.chrome(
+                """
                 if (window.__historyReloadObserver)
                     Services.obs.removeObserver(window.__historyReloadObserver, "http-on-stop-request");
                 delete window.__historyReloadObserver;
                 delete window.__historyReloadReceipt;
-            """)
+            """
+            )
 
     def test_replace_state_keeps_previous_addresses_and_states(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             history.replaceState({step: 1}, "", "/page/state");
             history.replaceState({step: 2}, "", "/page/state");
-        """)
+        """
+        )
         self.assertEqual(self.paths(), ["/page/start", "/page/state", "/page/state"])
         self.back()
         self.wait_url("/page/state")
@@ -888,18 +1875,22 @@ class HistoryTests(unittest.TestCase):
 
     def test_navigation_replace_keeps_previous_entry(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             setTimeout(() => navigation.navigate("/target", {history: "replace"}), 0);
-        """)
+        """
+        )
         self.wait_url("/target")
         self.assertEqual(self.paths(), ["/page/start", "/target"])
 
     def test_navigation_state_updates_keep_previous_state(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             navigation.updateCurrentEntry({state: {step: 1}});
             navigation.updateCurrentEntry({state: {step: 2}});
-        """)
+        """
+        )
         self.assertEqual(self.paths(), ["/page/start"] * 3)
         self.back()
         self.wait_for(
@@ -914,18 +1905,22 @@ class HistoryTests(unittest.TestCase):
 
     def test_branching_does_not_delete_forward_entries(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             history.pushState({}, "", "/page/one");
             history.pushState({}, "", "/page/two");
-        """)
+        """
+        )
         self.back()
         self.wait_url("/page/one")
-        length = self.browser.execute_script("""
+        length = self.browser.execute_script(
+            """
             history.pushState({}, "", "/page/branch");
             const length = history.length;
             history.forward();
             return length;
-        """)
+        """
+        )
         self.assertEqual(length, 4)
         self.wait_url("/page/two")
         self.assertEqual(
@@ -935,10 +1930,12 @@ class HistoryTests(unittest.TestCase):
 
     def test_more_than_fifty_entries_remain_available(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             for (let step = 1; step <= 80; step++)
                 history.pushState({step}, "", "/page/" + step);
-        """)
+        """
+        )
         paths = self.paths()
         self.assertEqual(len(paths), 81)
         self.assertEqual(paths[0], "/page/start")
@@ -947,10 +1944,12 @@ class HistoryTests(unittest.TestCase):
         self.set_pref("browser.startup.page", 3)
         self.load("/page/start")
         self.set_pref("browser.sessionhistory.max_entries", 3)
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             for (let step = 1; step <= 5; step++)
                 history.pushState({step}, "", "/page/" + step);
-        """)
+        """
+        )
         self.assertEqual(self.paths(), ["/page/3", "/page/4", "/page/5"])
         self.back()
         self.wait_url("/page/4")
@@ -968,9 +1967,11 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(self.browser.execute_script("return history.length"), 3)
 
     def test_waterfox_defaults_enable_full_history_retention(self):
-        defaults = self.chrome("""
+        defaults = self.chrome(
+            """
             const expected = {
                 "browser.sessionhistory.preserve_entries": true,
+                "browser.sessionhistory.tree_enabled": true,
                 "browser.sessionhistory.max_entries": 1000000000,
                 "browser.sessionstore.max_serialize_back": -1,
                 "browser.sessionstore.max_serialize_forward": -1,
@@ -981,11 +1982,13 @@ class HistoryTests(unittest.TestCase):
                 return [name, typeof value == "boolean" ? Services.prefs.getBoolPref(name) :
                     Services.prefs.getIntPref(name)];
             }));
-        """)
+        """
+        )
         self.assertEqual(
             defaults,
             {
                 "browser.sessionhistory.preserve_entries": True,
+                "browser.sessionhistory.tree_enabled": True,
                 "browser.sessionhistory.max_entries": 1000000000,
                 "browser.sessionstore.max_serialize_back": -1,
                 "browser.sessionstore.max_serialize_forward": -1,
@@ -995,10 +1998,12 @@ class HistoryTests(unittest.TestCase):
 
     def test_default_back_includes_noninteractive_entries(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             history.pushState({}, "", "/page/one");
             history.pushState({}, "", "/page/two");
-        """)
+        """
+        )
         self.chrome("gBrowser.selectedBrowser.goBack();")
         self.wait_url("/page/one")
 
@@ -1006,10 +2011,12 @@ class HistoryTests(unittest.TestCase):
         self.set_pref("browser.sessionhistory.max_entries", 1000000000)
         self.set_pref("browser.startup.page", 3)
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             for (let step = 1; step <= 30; step++)
                 history.pushState({step}, "", "/page/" + step);
-        """)
+        """
+        )
         state = self.tab_state()
         paths = [
             urlsplit(entry["url"]).path
@@ -1027,33 +2034,41 @@ class HistoryTests(unittest.TestCase):
     def test_replace_state_still_rejects_cross_origin_addresses(self):
         self.load("/page/start")
         before = self.entries()
-        result = self.browser.execute_script("""
+        result = self.browser.execute_script(
+            """
             try {
                 history.replaceState({}, "", "https://example.invalid/");
                 return "accepted";
             } catch (error) { return error.name; }
-        """)
+        """
+        )
         self.assertEqual(result, "SecurityError")
         self.assertEqual(self.entries(), before)
 
     def test_disabled_policy_retains_upstream_replace_behavior(self):
         self.set_pref("browser.sessionhistory.preserve_entries", False)
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             setTimeout(() => location.replace("/target"), 0);
-        """)
+        """
+        )
         self.wait_url("/target")
         self.assertEqual(self.paths(), ["/target"])
 
     def test_explicit_history_purge_remains_available(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             history.pushState({}, "", "/page/one");
             history.pushState({}, "", "/page/two");
-        """)
-        self.chrome("""
+        """
+        )
+        self.chrome(
+            """
             gBrowser.selectedBrowser.browsingContext.sessionHistory.purgeHistory(2);
-        """)
+        """
+        )
         self.assertEqual(self.paths(), ["/page/two"])
 
     def test_history_clear_drops_pre_clear_redirect_addresses(self):
@@ -1063,10 +2078,12 @@ class HistoryTests(unittest.TestCase):
             'setTimeout(() => location.href = "/redirect/held-start", 0);'
         )
         self.assertTrue(Pages.held_frame_entered.wait(10))
-        self.chrome("""
+        self.chrome(
+            """
             const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
             history.purgeHistory(history.count);
-        """)
+        """
+        )
         Pages.held_frame_release.set()
         self.wait_url("/target")
         self.assertEqual(self.paths(), ["/redirect/held-hop", "/target"])
@@ -1075,10 +2092,12 @@ class HistoryTests(unittest.TestCase):
 
     def test_browser_clear_keeps_only_the_visible_current_entry(self):
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             history.pushState({}, "", "/page/one");
             history.pushState({}, "", "/page/two");
-        """)
+        """
+        )
         self.back()
         self.wait_url("/page/one")
         self.chrome("gBrowser.selectedBrowser.purgeSessionHistory();")
@@ -1128,10 +2147,12 @@ class HistoryTests(unittest.TestCase):
     def test_forward_only_clear_is_saved_across_restart(self):
         self.set_pref("browser.startup.page", 3)
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             history.pushState({}, "", "/page/one");
             history.pushState({}, "", "/page/two");
-        """)
+        """
+        )
         self.tab_state()
         self.back()
         self.wait_url("/page/one")
@@ -1205,20 +2226,24 @@ class HistoryTests(unittest.TestCase):
         Pages.hold_next_frame = True
         self.back()
         self.assertTrue(Pages.held_frame_entered.wait(10))
-        self.chrome("""
+        self.chrome(
+            """
             const history = gBrowser.selectedBrowser.browsingContext.sessionHistory;
             history.purgeHistory(history.count);
-        """)
+        """
+        )
         self.assertEqual(self.paths(), [])
         Pages.held_frame_release.set()
         self.wait_url("/frame/held")
         self.wait_for(lambda: self.paths() == ["/frame/held"])
         self.assertEqual(self.browser.execute_script("return history.length"), 1)
         self.assertEqual(
-            self.browser.execute_script("""
+            self.browser.execute_script(
+                """
                 history.pushState({}, "", "/page/new");
                 return history.length;
-            """),
+            """
+            ),
             2,
         )
         self.assertEqual(self.paths(), ["/frame/held", "/page/new"])
@@ -1242,19 +2267,23 @@ class HistoryTests(unittest.TestCase):
                 'history.replaceState({private: true}, "", "/page/private-state");'
             )
             with private.using_context("chrome"):
-                profile = private.execute_script("""
+                profile = private.execute_script(
+                    """
                     const {PrivateBrowsingUtils} = ChromeUtils.importESModule(
                         "resource://gre/modules/PrivateBrowsingUtils.sys.mjs");
                     if (!PrivateBrowsingUtils.isWindowPrivate(window))
                         throw new Error("Expected a private window");
                     return Services.dirsvc.get("ProfD", Ci.nsIFile).path;
-                """)
-                private.execute_async_script("""
+                """
+                )
+                private.execute_async_script(
+                    """
                     const done = arguments[arguments.length - 1];
                     const {SessionSaver} = ChromeUtils.importESModule(
                         "resource:///modules/sessionstore/SessionSaver.sys.mjs");
                     SessionSaver.run().then(() => done());
-                """)
+                """
+                )
             shutdown = private.quit(in_app=True)
             self.assertFalse(shutdown["forced"])
             profile = Path(profile)
@@ -1269,17 +2298,21 @@ class HistoryTests(unittest.TestCase):
     def test_preservation_does_not_require_navigation_api(self):
         self.set_pref("dom.navigation.webidl.enabled", False)
         self.load("/page/start")
-        self.browser.execute_script("""
+        self.browser.execute_script(
+            """
             history.pushState({}, "", "/page/one");
             history.pushState({}, "", "/page/two");
-        """)
+        """
+        )
         self.back()
         self.wait_url("/page/one")
         self.assertEqual(
-            self.browser.execute_script("""
+            self.browser.execute_script(
+                """
             history.pushState({}, "", "/page/branch");
             return history.length;
-        """),
+        """
+            ),
             4,
         )
         self.assertEqual(
@@ -1292,6 +2325,11 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--case", action="append", default=[])
+    parser.add_argument(
+        "--tree",
+        action="store_true",
+        help="Run preservation cases with the history tree enabled",
+    )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     certificate = args.out / "localhost-cert.pem"
@@ -1336,6 +2374,7 @@ def main():
         HistoryTests.origin = f"http://127.0.0.1:{server.server_port}"
         HistoryTests.binary = args.binary
         HistoryTests.output = args.out
+        HistoryTests.tree_mode = args.tree
         loader = unittest.TestLoader()
         suite = (
             unittest.TestSuite(HistoryTests(name) for name in args.case)

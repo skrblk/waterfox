@@ -317,6 +317,9 @@ struct LoadingSessionHistoryInfo {
   // mOffset and mLoadingCurrentEntry are relevant only if
   // mLoadIsFromSessionHistory is true.
   int32_t mOffset = 0;
+  // Selected joint-path snapshot; a negative length uses linear bookkeeping.
+  int32_t mHistoryTreeIndex = -1;
+  int32_t mHistoryTreeLength = -1;
   // If we're loading from the current entry we want to treat it as not a
   // same-document navigation (see nsDocShell::IsSameDocumentNavigation).
   bool mLoadingCurrentEntry = false;

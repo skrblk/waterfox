@@ -9,6 +9,7 @@
 #include "ContentAnalysis.h"
 #include "ErrorList.h"
 #include "SessionHistoryEntry.h"
+#include "mozilla/AutoRestore.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/Components.h"
 #include "mozilla/ErrorResult.h"
@@ -39,6 +40,7 @@
 #endif
 #include "mozilla/net/DocumentLoadListener.h"
 #include "mozilla/NullPrincipal.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/ScopedPrefs.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_docshell.h"
@@ -574,6 +576,11 @@ void CanonicalBrowsingContext::AddLoadingSessionHistoryEntry(
       replaceInitialEntry ? mActiveEntry : nullptr,
       replaceInitialEntry && mActiveEntry ? mActiveEntry->Info().NavigationId()
                                           : nsID{}});
+  if (history && history->TreeEnabled() && IsTop()) {
+    // Frame loads merge into the current joint root instead.
+    mLoadingEntries.LastElement().mTreeSourceNodeId =
+        Some(history->TreeNodeIdAt(history->Index()));
+  }
 }
 
 void CanonicalBrowsingContext::DiscardHistoryBeforeLastClear() {
@@ -712,7 +719,9 @@ CanonicalBrowsingContext::CreateLoadingSessionHistoryEntryForLoad(
   // When adding a new entry we need to make sure that the navigation object
   // gets it's entries list initialized to the contiguous entries ending in the
   // new entry.
-  if (Navigation::IsAPIEnabled()) {
+  if (Navigation::IsAPIEnabled() ||
+      (IsContent() && StaticPrefs::browser_sessionhistory_preserve_entries() &&
+       StaticPrefs::browser_sessionhistory_tree_enabled())) {
     bool sessionHistoryLoad =
         existingLoadingInfo && existingLoadingInfo->mLoadIsFromSessionHistory;
 
@@ -772,14 +781,15 @@ CanonicalBrowsingContext::CreateLoadingSessionHistoryEntryForLoad(
     [[maybe_unused]] auto pred = [&](auto& entry) {
       return entry.NavigationKey() == loadingInfo->mInfo.NavigationKey();
     };
-    if (StaticPrefs::dom_navigation_api_strict_enabled()) {
+    if (Navigation::IsAPIEnabled() &&
+        StaticPrefs::dom_navigation_api_strict_enabled()) {
       // https://bugzil.la/1989045
       MOZ_DIAGNOSTIC_ASSERT(
           std::any_of(loadingInfo->mContiguousEntries.begin(),
                       loadingInfo->mContiguousEntries.end(), pred),
           "The target entry now needs to be a part of the contiguous list of "
           "entries.");
-    } else {
+    } else if (Navigation::IsAPIEnabled()) {
       MOZ_ASSERT(
           std::any_of(loadingInfo->mContiguousEntries.begin(),
                       loadingInfo->mContiguousEntries.end(), pred),
@@ -860,7 +870,8 @@ CanonicalBrowsingContext::ReplaceLoadingSessionHistoryEntryForLoad(
         result->mLoadIsFromSessionHistory = false;
         result->mTriggeringNavigationType = Some(NavigationType::Push);
       }
-      if (Navigation::IsAPIEnabled()) {
+      if (Navigation::IsAPIEnabled() ||
+          (preserve && StaticPrefs::browser_sessionhistory_tree_enabled())) {
         MOZ_LOG_FMT(gNavigationAPILog, LogLevel::Debug,
                     "CanonicalBrowsingContext::"
                     "ReplaceLoadingSessionHistoryEntryForLoad: "
@@ -881,7 +892,6 @@ CanonicalBrowsingContext::ReplaceLoadingSessionHistoryEntryForLoad(
 void CanonicalBrowsingContext::GetContiguousEntriesForLoad(
     LoadingSessionHistoryInfo& aLoadingInfo,
     const RefPtr<SessionHistoryEntry>& aEntry) {
-  MOZ_DIAGNOSTIC_ASSERT(Navigation::IsAPIEnabled());
   if (IsContent() && StaticPrefs::browser_sessionhistory_preserve_entries()) {
     DiscardHistoryBeforeLastClear();
     aLoadingInfo.mContiguousEntries.Clear();
@@ -910,11 +920,59 @@ void CanonicalBrowsingContext::GetContiguousEntriesForLoad(
     bool insertedTarget = false;
     if (history) {
       int32_t index = history->Index();
+      if (history->TreeEnabled() && aEntry->ForInitialLoad() && loading &&
+          loading->mTreeSourceNodeId &&
+          loading->mLoadClearGeneration == history->ClearGeneration()) {
+        index = history->TreeIndexOf(*loading->mTreeSourceNodeId);
+      }
       RefPtr targetRoot = nsSHistory::GetRootSHEntry(aEntry);
       int32_t historyTarget =
           aEntry->ForInitialLoad() ? -1 : history->GetIndexOfEntry(targetRoot);
       const auto& roots = history->Entries();
-      for (size_t position = 0; position < roots.Length(); ++position) {
+      nsTArray<int32_t> positions;
+      if (history->TreeEnabled()) {
+        positions =
+            history->PathFor(historyTarget >= 0 ? historyTarget : index);
+        if (historyTarget >= 0) {
+          aLoadingInfo.mHistoryTreeIndex = positions.IndexOf(historyTarget);
+          aLoadingInfo.mHistoryTreeLength = positions.Length();
+        } else {
+          // Initial placeholders and the first frame address reuse a joint
+          // root.
+          int32_t added = (loading ? loading->mRedirectEntries.Length() : 0) +
+                          1 -
+                          ((replaceInitialEntry && index >= 0) ||
+                           (!IsTop() && !mActiveEntry));
+          auto sourcePosition = positions.IndexOf(index);
+          int32_t prefix =
+              sourcePosition == positions.NoIndex ? 0 : sourcePosition + 1;
+          if (!added) {
+            aLoadingInfo.mHistoryTreeIndex = prefix - 1;
+            aLoadingInfo.mHistoryTreeLength = positions.Length();
+          } else {
+            int32_t cap =
+                Preferences::GetInt("browser.sessionhistory.max_entries", 50);
+            int64_t purge =
+                cap < 0 ? 0
+                        : std::max<int64_t>(
+                              0, int64_t(history->Length()) + added - cap);
+            int32_t retainedPrefix = 0;
+            for (int32_t position = 0; position < prefix; ++position) {
+              retainedPrefix += positions[position] >= purge;
+            }
+            int32_t retainedAdded =
+                added - std::max<int64_t>(0, purge - history->Length());
+            aLoadingInfo.mHistoryTreeLength = retainedPrefix + retainedAdded;
+            aLoadingInfo.mHistoryTreeIndex =
+                aLoadingInfo.mHistoryTreeLength - 1;
+          }
+        }
+      } else {
+        for (size_t position = 0; position < roots.Length(); ++position) {
+          positions.AppendElement(position);
+        }
+      }
+      for (int32_t position : positions) {
         RefPtr root = roots[position];
         if (loading && loading->mForwardHistory && position > size_t(index)) {
           size_t forwardIndex = position - index - 1;
@@ -939,6 +997,9 @@ void CanonicalBrowsingContext::GetContiguousEntriesForLoad(
           targetIndex = projected.Length();
           projected.AppendElement(aEntry);
           insertedTarget = true;
+          if (history->TreeEnabled()) {
+            break;
+          }
         }
       }
     }
@@ -950,6 +1011,9 @@ void CanonicalBrowsingContext::GetContiguousEntriesForLoad(
       }
       targetIndex = projected.Length();
       projected.AppendElement(aEntry);
+    }
+    if (!Navigation::IsAPIEnabled()) {
+      return;
     }
     nsCOMPtr targetURI = aEntry->GetURIOrInheritedForAboutBlank();
     auto sameOrigin = [&](SessionHistoryEntry* candidate) {
@@ -1407,6 +1471,7 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
                                 mActiveEntry->Info().NavigationId());
       auto redirectEntries = std::move(mLoadingEntries[i].mRedirectEntries);
       auto forwardHistory = std::move(mLoadingEntries[i].mForwardHistory);
+      auto treeSourceNodeId = mLoadingEntries[i].mTreeSourceNodeId;
       if (aCacheKey != 0) {
         newActiveEntry->SetCacheKey(aCacheKey);
       }
@@ -1488,6 +1553,14 @@ void CanonicalBrowsingContext::SessionHistoryCommit(
       }
 
       CallerWillNotifyHistoryIndexAndLengthChanges caller(shistory);
+      AutoRestore<Maybe<nsCString>> restoreTreeParent(
+          shistory->PendingTreeParent());
+      if (shistory->TreeEnabled() && !loadFromSessionHistory &&
+          !clearedSinceLoad) {
+        shistory->PendingTreeParent() = treeSourceNodeId;
+      } else {
+        shistory->PendingTreeParent().reset();
+      }
       shistory->CommitForwardHistoryInsertion(forwardHistory.get());
 
       // If there is a name in the new entry, clear the name of all contiguous
@@ -1879,7 +1952,14 @@ Maybe<int32_t> CanonicalBrowsingContext::HistoryGo(
            (uint64_t)(aContentId.isSome() ? aContentId.value() : 0)));
 
   while (true) {
-    index += aOffset;
+    if (shistory->TreeEnabled()) {
+      index = shistory->TreeIndexAtOffset(index.value(), aOffset);
+      if (index.value() < 0) {
+        return Nothing();
+      }
+    } else {
+      index += aOffset;
+    }
     if (!index.isValid()) {
       MOZ_LOG(gSHLog, LogLevel::Debug, ("Invalid index"));
       return Nothing();
@@ -1889,8 +1969,10 @@ Maybe<int32_t> CanonicalBrowsingContext::HistoryGo(
     // history entries. We compare with >= to account for the case where
     // aOffset >= length.
     if (!StaticPrefs::browser_navigation_requireUserInteraction() ||
-        !aRequireUserInteraction || index.value() >= shistory->Length() - 1 ||
-        index.value() <= 0) {
+        !aRequireUserInteraction ||
+        (shistory->TreeEnabled()
+             ? shistory->TreeIndexAtOffset(index.value(), aOffset) < 0
+             : index.value() >= shistory->Length() - 1 || index.value() <= 0)) {
       break;
     }
     if (shistory->HasUserInteractionAtIndex(index.value())) {
@@ -1996,6 +2078,15 @@ void CanonicalBrowsingContext::NavigationTraverse(
   }
 
   int32_t offset = targetIndex - activeIndex;
+  if (shistory->TreeEnabled()) {
+    const auto path = shistory->PathFor(activeIndex);
+    auto from = path.IndexOf(activeIndex);
+    auto to = path.IndexOf(targetIndex);
+    if (from == path.NoIndex || to == path.NoIndex) {
+      return aResolver(NS_ERROR_DOM_INVALID_STATE_ERR);
+    }
+    offset = int32_t(to) - int32_t(from);
+  }
 
   int32_t requestedIndex = shistory->GetTargetIndexForHistoryOperation();
   // Step 12.3
@@ -3132,20 +3223,23 @@ void CanonicalBrowsingContext::ResetSHEntryHasUserInteractionCache() {
   }
 }
 
-void CanonicalBrowsingContext::HistoryCommitIndexAndLength() {
+void CanonicalBrowsingContext::HistoryCommitIndexAndLength(
+    bool aReconcileEntries) {
   nsID changeID = {};
   CallerWillNotifyHistoryIndexAndLengthChanges caller(nullptr);
-  HistoryCommitIndexAndLength(changeID, caller);
+  HistoryCommitIndexAndLength(changeID, caller, nullptr, Nothing(),
+                              aReconcileEntries);
 }
 
 void CanonicalBrowsingContext::HistoryCommitIndexAndLength(
     const nsID& aChangeID,
     const CallerWillNotifyHistoryIndexAndLengthChanges& aProofOfCaller,
     CanonicalBrowsingContext* aRekeyedContext,
-    const Maybe<nsID>& aPreviousNavigationId) {
+    const Maybe<nsID>& aPreviousNavigationId, bool aReconcileEntries) {
   if (!IsTop()) {
     Cast(Top())->HistoryCommitIndexAndLength(
-        aChangeID, aProofOfCaller, aRekeyedContext, aPreviousNavigationId);
+        aChangeID, aProofOfCaller, aRekeyedContext, aPreviousNavigationId,
+        aReconcileEntries);
     return;
   }
 
@@ -3157,9 +3251,14 @@ void CanonicalBrowsingContext::HistoryCommitIndexAndLength(
   shistory->GetIndex(&index);
   int32_t length = shistory->GetCount();
 
-  GetChildSessionHistory()->SetIndexAndLength(index, length, aChangeID);
-
   shistory->EvictOutOfRangeDocumentViewers(index);
+  auto* nativeHistory = static_cast<nsSHistory*>(shistory.get());
+  if (nativeHistory->TreeEnabled()) {
+    index = nativeHistory->ActiveIndex(index);
+    length = nativeHistory->ActiveLength();
+  }
+
+  GetChildSessionHistory()->SetIndexAndLength(index, length, aChangeID);
 
   nsTArray<NavigationEntriesTruncation> truncations;
   PreOrderWalk([&](BrowsingContext* aContext) {
@@ -3177,7 +3276,8 @@ void CanonicalBrowsingContext::HistoryCommitIndexAndLength(
       return;
     }
     if (aContext->IsContent() &&
-        StaticPrefs::browser_sessionhistory_preserve_entries()) {
+        (StaticPrefs::browser_sessionhistory_preserve_entries() ||
+         aReconcileEntries)) {
       LoadingSessionHistoryInfo info;
       info.mInfo = activeEntry->Info();
       info.mTriggeringNavigationType = Some(NavigationType::Traverse);

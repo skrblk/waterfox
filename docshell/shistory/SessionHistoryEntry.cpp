@@ -440,6 +440,8 @@ LoadingSessionHistoryInfo::LoadingSessionHistoryInfo(
       mPreservedRedirectCount(aInfo->mPreservedRedirectCount),
       mLoadIsFromSessionHistory(aInfo->mLoadIsFromSessionHistory),
       mOffset(aInfo->mOffset),
+      mHistoryTreeIndex(aInfo->mHistoryTreeIndex),
+      mHistoryTreeLength(aInfo->mHistoryTreeLength),
       mLoadingCurrentEntry(aInfo->mLoadingCurrentEntry) {
   MOZ_ASSERT(SessionHistoryEntry::GetByLoadId(mLoadId)->mEntry == aEntry);
 }
@@ -1897,6 +1899,8 @@ void ParamTraits<mozilla::dom::LoadingSessionHistoryInfo>::Write(
   WriteParam(aWriter, aParam.mPreservedRedirectCount);
   WriteParam(aWriter, aParam.mLoadIsFromSessionHistory);
   WriteParam(aWriter, aParam.mOffset);
+  WriteParam(aWriter, aParam.mHistoryTreeIndex);
+  WriteParam(aWriter, aParam.mHistoryTreeLength);
   WriteParam(aWriter, aParam.mLoadingCurrentEntry);
   WriteParam(aWriter, aParam.mForceMaybeResetName);
 }
@@ -1912,6 +1916,8 @@ bool ParamTraits<mozilla::dom::LoadingSessionHistoryInfo>::Read(
       !ReadParam(aReader, &aResult->mPreservedRedirectCount) ||
       !ReadParam(aReader, &aResult->mLoadIsFromSessionHistory) ||
       !ReadParam(aReader, &aResult->mOffset) ||
+      !ReadParam(aReader, &aResult->mHistoryTreeIndex) ||
+      !ReadParam(aReader, &aResult->mHistoryTreeLength) ||
       !ReadParam(aReader, &aResult->mLoadingCurrentEntry) ||
       !ReadParam(aReader, &aResult->mForceMaybeResetName)) {
     aReader->FatalError("Error reading fields for LoadingSessionHistoryInfo");

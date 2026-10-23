@@ -228,7 +228,16 @@ export class AboutReaderParent extends JSWindowActorParent {
     let browsingContext = this.browsingContext;
     if (browsingContext.childSessionHistory.canGo(offset)) {
       let shistory = browsingContext.sessionHistory;
-      let nextEntry = shistory.getEntryAtIndex(shistory.index + offset);
+      let index = shistory.index + offset;
+      if (shistory.treeEnabled) {
+        const path = shistory.activePath;
+        const position = path.indexOf(shistory.index);
+        if (position < 0 || path[position + offset] === undefined) {
+          return false;
+        }
+        index = path[position + offset];
+      }
+      let nextEntry = shistory.getEntryAtIndex(index);
       let nextURL = nextEntry.URI.spec;
       return nextURL && (nextURL == url || !url);
     }
