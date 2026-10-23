@@ -188,6 +188,10 @@ class SessionHistoryInfo {
   nsID& NavigationKey() { return mNavigationKey; }
   const nsID& NavigationKey() const { return mNavigationKey; }
   const nsID& NavigationId() const { return mNavigationId; }
+  void AdoptNavigationIdentityFrom(const SessionHistoryInfo& aInfo) {
+    mNavigationKey = aInfo.mNavigationKey;
+    mNavigationId = aInfo.mNavigationId;
+  }
 
   nsIStructuredCloneContainer* GetNavigationAPIState() const;
   void SetNavigationAPIState(nsIStructuredCloneContainer* aState);
@@ -319,6 +323,7 @@ struct LoadingSessionHistoryInfo {
   Maybe<NavigationType> mTriggeringNavigationType;
 
   uint64_t mLoadId = 0;
+  uint32_t mPreservedRedirectCount = 0;
 
   // The following three member variables are used to inform about a load from
   // the session history. The session-history-in-child approach has just
@@ -475,7 +480,7 @@ class SessionHistoryEntry : public nsISHEntry, public nsSupportsWeakReference {
   void GetChildAt(int32_t aIndex, SessionHistoryEntry** aChild);
 
   SessionHistoryEntry* GetChildSHEntryIfHasNoDynamicallyAddedChild(
-      int32_t aChildOffset);
+      int32_t aChildOffset, bool aStaticOrdinal = false);
 
   already_AddRefed<SessionHistoryEntry> GetParent();
 
@@ -519,6 +524,12 @@ class SessionHistoryEntry : public nsISHEntry, public nsSupportsWeakReference {
 
   const nsTArray<RefPtr<SessionHistoryEntry>>& Children() { return mChildren; }
 
+  already_AddRefed<SessionHistoryEntry> CopyForHistoryInsertion(
+      uint32_t aSplitID, RefPtr<SessionHistoryEntry>& aNewIdentity);
+  void ApplyHistoryInsertionIdentity(const SessionHistoryEntry& aCopy,
+                                     SessionHistoryEntry* aPreviousIdentity,
+                                     bool& aAddedContribution);
+
   already_AddRefed<nsIURI> GetURIOrInheritedForAboutBlank() const;
 
   void SetNavigationAPIState(nsIStructuredCloneContainer* aState) {
@@ -537,6 +548,7 @@ class SessionHistoryEntry : public nsISHEntry, public nsSupportsWeakReference {
   UniquePtr<SessionHistoryInfo> mInfo;
   nsWeakPtr mParent;
   uint32_t mID;
+  int32_t mStaticChildOrdinal = -1;
   nsTArray<RefPtr<SessionHistoryEntry>> mChildren;
   Maybe<Wireframe> mWireframe;
 
@@ -545,6 +557,16 @@ class SessionHistoryEntry : public nsISHEntry, public nsSupportsWeakReference {
   HistoryEntryCounterForBrowsingContext mBCHistoryLength;
 
   static nsTHashMap<nsUint64HashKey, LoadingEntry>* sLoadIdToEntry;
+};
+
+struct PreservedForwardHistory {
+  int32_t mIndex = -1;
+  int32_t mLength = 0;
+  RefPtr<SessionHistoryEntry> mAnchor;
+  RefPtr<SessionHistoryEntry> mPreviousIdentity;
+  RefPtr<SessionHistoryEntry> mNewIdentity;
+  nsTArray<RefPtr<SessionHistoryEntry>> mOriginals;
+  nsTArray<RefPtr<SessionHistoryEntry>> mCopies;
 };
 
 }  // namespace dom

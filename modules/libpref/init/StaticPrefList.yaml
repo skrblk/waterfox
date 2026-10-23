@@ -1994,6 +1994,12 @@
   value: true
   mirror: always
 
+# Preserve navigation entries that would otherwise be replaced or truncated.
+- name: browser.sessionhistory.preserve_entries
+  type: bool
+  value: false
+  mirror: always
+
 # SessionStore prefs
 # Maximum number of bytes of DOMSessionStorage data we collect per origin.
 - name: browser.sessionstore.dom_storage_limit

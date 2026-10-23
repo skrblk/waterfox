@@ -30,6 +30,7 @@
 #include "mozilla/ProfilerLabels.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/ScrollContainerFrame.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_fission.h"
 #include "mozilla/WebBrowserPersistLocalDocument.h"
 #include "mozilla/dom/BrowserBridgeChild.h"
@@ -1871,7 +1872,9 @@ void nsFrameLoader::StartDestroy(bool aForProcessSwitch) {
   }
 
   // Seems like this is a dynamic frame removal.
-  if (dynamicSubframeRemoval) {
+  if (dynamicSubframeRemoval &&
+      !(mPendingBrowsingContext->IsContent() &&
+        StaticPrefs::browser_sessionhistory_preserve_entries())) {
     BrowsingContext* browsingContext = GetExtantBrowsingContext();
     if (browsingContext) {
       RefPtr<ChildSHistory> childSHistory =

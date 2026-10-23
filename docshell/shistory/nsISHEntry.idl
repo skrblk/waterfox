@@ -45,7 +45,7 @@ struct EntriesAndBrowsingContextData;
 [ptr] native SessionHistoryEntryPtr(mozilla::dom::SessionHistoryEntry);
 webidl BrowsingContext;
 
-[builtinclass, scriptable, uuid(0dad26b8-a259-42c7-93f1-2fa7fc076e45)]
+[builtinclass, scriptable, uuid(75131696-3130-4e44-853d-683e29e4e701)]
 interface nsISHEntry : nsISupports
 {
     /**
@@ -316,6 +316,11 @@ interface nsISHEntry : nsISupports
      */
     [noscript, notxpcom] boolean isDynamicallyAdded();
 
+    attribute boolean dynamicallyAdded;
+
+    /** Static frame position independent of dynamic siblings; -1 if unknown. */
+    attribute long staticChildOrdinal;
+
     /**
      * Returns true if any of the child entries returns true
      * when isDynamicallyAdded is called on it.
@@ -369,6 +374,9 @@ interface nsISHEntry : nsISupports
      * Get child at an index.
      */
     nsISHEntry GetChildAt(in long aIndex);
+
+    /** Restore an exact serialized slot without reordering dynamic children. */
+    void restoreChildAt(in nsISHEntry aChild, in long aIndex);
 
     /**
      * If this entry has no dynamically added child, get the child SHEntry

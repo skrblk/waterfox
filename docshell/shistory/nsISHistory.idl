@@ -35,7 +35,7 @@ native MaybeInt32(mozilla::Maybe<int32_t>);
  * This interface is accessible from javascript.
  */
 
-[builtinclass, scriptable, uuid(7b807041-e60a-4384-935f-af3061d8b815)]
+[builtinclass, scriptable, uuid(3e5df16c-7544-46bd-b2e4-9ece77073424)]
 interface nsISHistory: nsISupports
 {
   /**
@@ -93,6 +93,9 @@ interface nsISHistory: nsISupports
    *                          invalid or out of bounds with the size of history.
    */
   void purgeHistory(in long aNumEntries);
+
+  /** Explicitly clear history, optionally retaining only the current entry. */
+  void clearHistory(in boolean aKeepCurrent);
 
   /**
    * Called to register a listener for the session history component.

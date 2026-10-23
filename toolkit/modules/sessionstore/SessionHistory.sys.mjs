@@ -156,6 +156,12 @@ var SessionHistoryInternal = {
     if (shEntry.isSubFrame) {
       entry.subframe = true;
     }
+    if (shEntry.dynamicallyAdded) {
+      entry.dynamicallyAdded = true;
+    }
+    if (shEntry.staticChildOrdinal >= 0) {
+      entry.staticChildOrdinal = shEntry.staticChildOrdinal;
+    }
 
     entry.cacheKey = shEntry.cacheKey;
     entry.ID = shEntry.ID;
@@ -271,13 +277,27 @@ var SessionHistoryInternal = {
       entry.wireframe = shEntry.wireframe;
     }
 
-    if (shEntry.childCount > 0 && !shEntry.hasDynamicallyAddedChild()) {
+    if (
+      shEntry.childCount > 0 &&
+      (!shEntry.hasDynamicallyAddedChild() ||
+        Services.prefs.getBoolPref(
+          "browser.sessionhistory.preserve_entries",
+          false
+        ))
+    ) {
       let children = [];
       for (let i = 0; i < shEntry.childCount; i++) {
         let child = shEntry.GetChildAt(i);
 
         if (child) {
           children.push(this.serializeEntry(child));
+        } else if (
+          Services.prefs.getBoolPref(
+            "browser.sessionhistory.preserve_entries",
+            false
+          )
+        ) {
+          children.push({});
         }
       }
 
@@ -389,6 +409,15 @@ var SessionHistoryInternal = {
     shEntry.title = entry.title || entry.url;
     if (entry.subframe) {
       shEntry.isSubFrame = entry.subframe || false;
+    }
+    if (entry.dynamicallyAdded) {
+      shEntry.dynamicallyAdded = true;
+    }
+    if (
+      Number.isInteger(entry.staticChildOrdinal) &&
+      entry.staticChildOrdinal >= 0
+    ) {
+      shEntry.staticChildOrdinal = entry.staticChildOrdinal;
     }
     shEntry.setLoadTypeAsHistory();
     if (entry.contentType) {
@@ -577,6 +606,14 @@ var SessionHistoryInternal = {
       for (var i = 0; i < entry.children.length; i++) {
         // XXXzpao Wallpaper patch for bug 514751
         if (!entry.children[i].url) {
+          if (
+            Services.prefs.getBoolPref(
+              "browser.sessionhistory.preserve_entries",
+              false
+            )
+          ) {
+            shEntry.restoreChildAt(null, i);
+          }
           continue;
         }
 
@@ -595,15 +632,22 @@ var SessionHistoryInternal = {
         // SHEntries with the same doc identifier have the same document iff
         // they have the same parent or their parents have the same document.
 
-        shEntry.AddChild(
-          this.deserializeEntry(
-            entry.children[i],
-            idMap,
-            childDocIdents,
-            shistory
-          ),
-          i
+        const child = this.deserializeEntry(
+          entry.children[i],
+          idMap,
+          childDocIdents,
+          shistory
         );
+        if (
+          Services.prefs.getBoolPref(
+            "browser.sessionhistory.preserve_entries",
+            false
+          )
+        ) {
+          shEntry.restoreChildAt(child, i);
+        } else {
+          shEntry.AddChild(child, i);
+        }
       }
     }
 

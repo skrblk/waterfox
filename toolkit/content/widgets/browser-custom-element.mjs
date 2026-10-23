@@ -1254,6 +1254,18 @@ export class MozBrowser extends MozElements.MozElementMixin(XULFrameElement) {
         return;
       }
 
+      if (
+        Services.prefs.getBoolPref(
+          "browser.sessionhistory.preserve_entries",
+          false
+        )
+      ) {
+        sessionHistory.clearHistory(
+          this.browsingContext.currentWindowGlobal.documentURI != "about:blank"
+        );
+        return;
+      }
+
       // place the entry at current index at the end of the history list, so it won't get removed
       if (sessionHistory.index < sessionHistory.count - 1) {
         let indexEntry = sessionHistory.getEntryAtIndex(sessionHistory.index);

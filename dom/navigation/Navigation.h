@@ -135,6 +135,11 @@ class Navigation final : public DOMEventTargetHelper {
       mozilla::Span<const SessionHistoryInfo> aNewSHInfos,
       const SessionHistoryInfo* aInitialSHInfo);
 
+  void ReconcileHistoryEntries(
+      mozilla::Span<const SessionHistoryInfo> aNewSHInfos,
+      const SessionHistoryInfo* aCurrentSHInfo,
+      const Maybe<nsID>& aPreviousNavigationId = Nothing());
+
   // https://html.spec.whatwg.org/multipage/nav-history-apis.html#update-the-navigation-api-entries-for-reactivation
   MOZ_CAN_RUN_SCRIPT
   void UpdateForReactivation(Span<const SessionHistoryInfo> aNewSHEs,
