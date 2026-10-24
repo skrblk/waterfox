@@ -82,6 +82,12 @@ changes as a patch series.
   The Back/Forward history menu exposes an expandable tree, with native entry
   restoration and branch duplication into another tab. Relationships survive
   session restoration. Details: [history tree](tools/history-preservation/README.md#branching-history).
+- **Private tabs survive a move to a new window.** Moving private container
+  tabs, or a tree holding them, to a new window kept none of them: the
+  cleanup that drops private tabs left over from a restored session also
+  removed the tabs that had just moved in, and opened a new tab when
+  nothing else was left. Tabs that arrive from another window are now
+  exempt from that cleanup.
 
 ## Building
 

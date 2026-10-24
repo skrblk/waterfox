@@ -340,3 +340,64 @@ add_task(async function test_move_tree_to_new_window_preserves_topology() {
     await BrowserTestUtils.closeWindow(newWindow);
   }
 });
+
+add_task(async function test_move_private_tree_to_new_window() {
+  await enableTreeTabs();
+  const { PrivateTab } = ChromeUtils.importESModule(
+    "resource:///modules/PrivateTab.sys.mjs"
+  );
+  const userContextId = PrivateTab.userContextId;
+
+  const parentURL = "about:blank?waterfox-private-tree-parent";
+  const childURL = "about:blank?waterfox-private-tree-child";
+  const parentTab = BrowserTestUtils.addTab(gBrowser, parentURL, {
+    userContextId,
+  });
+  await BrowserTestUtils.browserLoaded(
+    parentTab.linkedBrowser,
+    false,
+    parentURL
+  );
+  await BrowserTestUtils.switchTab(gBrowser, parentTab);
+  const childTab = BrowserTestUtils.addTab(gBrowser, childURL, {
+    userContextId,
+  });
+  await BrowserTestUtils.browserLoaded(childTab.linkedBrowser, false, childURL);
+  gBrowser.TreeTabsService.attachTab(childTab, parentTab);
+  await waitForTreeCondition(
+    () => getTreeParent(childTab) == parentTab,
+    "Waiting for the private child to attach"
+  );
+
+  const delayedStartup = BrowserTestUtils.waitForNewWindow();
+  const newWindow = gBrowser.replaceTabsWithWindow(parentTab);
+  await delayedStartup;
+
+  try {
+    const findTab = url =>
+      newWindow.gBrowser.tabs.find(
+        tab => tab.linkedBrowser.currentURI.spec == url
+      );
+    await waitForTreeCondition(
+      () =>
+        findTab(childURL) &&
+        newWindow.gBrowser.TreeTabsService.getParent(findTab(childURL)) ==
+          findTab(parentURL),
+      "Waiting for the private tree to be restored in the new window"
+    );
+    for (const url of [parentURL, childURL]) {
+      is(
+        findTab(url).userContextId,
+        userContextId,
+        `${url} stays in the private container`
+      );
+    }
+    is(
+      newWindow.gBrowser.tabs.length,
+      2,
+      "The new window holds only the moved private tree"
+    );
+  } finally {
+    await BrowserTestUtils.closeWindow(newWindow);
+  }
+});

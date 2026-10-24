@@ -87,6 +87,47 @@ add_task(async function test_new_private_tab() {
   );
 });
 
+add_task(async function test_move_private_tabs_to_new_window() {
+  const urls = [
+    "about:blank?waterfox-private-move-a",
+    "about:blank?waterfox-private-move-b",
+  ];
+  const tabs = urls.map(url =>
+    BrowserTestUtils.addTab(gBrowser, url, {
+      userContextId: PrivateTab.userContextId,
+    })
+  );
+  await Promise.all(
+    tabs.map((tab, i) =>
+      BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, urls[i])
+    )
+  );
+  await BrowserTestUtils.switchTab(gBrowser, tabs[0]);
+  gBrowser.addToMultiSelectedTabs(tabs[1]);
+
+  const delayedStartup = BrowserTestUtils.waitForNewWindow();
+  const newWindow = gBrowser.replaceTabsWithWindow(tabs[1]);
+  await delayedStartup;
+
+  try {
+    const movedURLs = newWindow.gBrowser.tabs
+      .filter(tab => tab.userContextId == PrivateTab.userContextId)
+      .map(tab => tab.linkedBrowser.currentURI.spec);
+    Assert.deepEqual(
+      movedURLs,
+      urls,
+      "Moved private tabs stay open in the new window"
+    );
+    is(
+      newWindow.gBrowser.tabs.length,
+      urls.length,
+      "The new window holds only the moved tabs"
+    );
+  } finally {
+    await BrowserTestUtils.closeWindow(newWindow);
+  }
+});
+
 add_task(async function test_content_window_private_pref() {
   Services.prefs.setBoolPref("browser.tabs.selectedTabPrivate", true);
   ok(

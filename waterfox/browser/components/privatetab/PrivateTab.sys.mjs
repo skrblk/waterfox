@@ -34,6 +34,9 @@ const PLACES_ITEMS = [
 export const PrivateTab = {
   _initialized: false,
   _windows: new WeakSet(),
+  // Private tabs moved in from another window keep their live session;
+  // the restore cleanup in a new window must leave them alone.
+  _adoptedTabs: new WeakSet(),
   container: null,
 
   init() {
@@ -178,6 +181,10 @@ export const PrivateTab = {
       }
     });
     tabContainer.addEventListener("TabClose", event => {
+      const adoptedBy = event.detail?.adoptedBy;
+      if (adoptedBy && this.isPrivate(event.target)) {
+        this._adoptedTabs.add(adoptedBy);
+      }
       if (this.isPrivate(event.target) && !this._anyPrivateTabs()) {
         this.clearData();
       }
@@ -195,7 +202,9 @@ export const PrivateTab = {
   },
 
   _discardRestoredPrivateTabs(win) {
-    const privateTabs = win.gBrowser.tabs.filter(tab => this.isPrivate(tab));
+    const privateTabs = win.gBrowser.tabs.filter(
+      tab => this.isPrivate(tab) && !this._adoptedTabs.has(tab)
+    );
     if (!privateTabs.length) {
       return;
     }
