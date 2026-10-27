@@ -88,6 +88,15 @@ changes as a patch series.
   removed the tabs that had just moved in, and opened a new tab when
   nothing else was left. Tabs that arrive from another window are now
   exempt from that cleanup.
+- **On Linux, the interface gets its own CPU and memory share.** Process
+  priorities, which Linux builds only used for the OOM score, also place
+  processes in cgroup v2 groups, inside a scope that the systemd user manager
+  delegates to Waterfox at startup: the parent and GPU processes in `ui`,
+  content processes in `foreground` or `background`, others in `helpers`.
+  `ui` gets a higher `cpu.weight` and a `memory.low`, background content a
+  lower `cpu.weight`. `memory.low` only protects as much as the user's slices
+  also protect (`MemoryLow=`), so without that only the CPU weights apply.
+  Preferences: `dom.ipc.processPriorityManager.linuxCgroups.*`.
 
 ## Building
 

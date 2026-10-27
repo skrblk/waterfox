@@ -3701,6 +3701,36 @@
   mirror: always
 #endif
 
+#if defined(XP_LINUX) && !defined(MOZ_WIDGET_ANDROID)
+# Put the parent process and content processes into cgroup v2 groups by
+# priority, in a scope delegated by the systemd user manager. Read once, when
+# the parent process sets its own priority at startup.
+- name: dom.ipc.processPriorityManager.linuxCgroups.enabled
+  type: bool
+  value: true
+  mirror: always
+
+# cpu.weight of the group holding the parent and GPU processes (1-10000,
+# where content and helper processes have the default of 100).
+- name: dom.ipc.processPriorityManager.linuxCgroups.uiCpuWeight
+  type: uint32_t
+  value: 1000
+  mirror: always
+
+# cpu.weight of the group holding background content processes.
+- name: dom.ipc.processPriorityManager.linuxCgroups.backgroundCpuWeight
+  type: uint32_t
+  value: 20
+  mirror: always
+
+# memory.low of the group holding the parent and GPU processes, in MiB. It
+# only takes effect up to what the ancestor cgroups protect as well.
+- name: dom.ipc.processPriorityManager.linuxCgroups.uiMemoryLowMB
+  type: uint32_t
+  value: 2048
+  mirror: always
+#endif
+
 # This is a temporary preference intended to allow relaxing the new
 # LoadedOriginSet checks from bug 2055554 if they start causing issues.
 - name: dom.ipc.validatePrincipal.validateSiteLoaded
