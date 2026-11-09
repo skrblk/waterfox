@@ -1599,9 +1599,17 @@ void nsDragSession::SourceEndDragSession(GdkDragContext* aContext,
     }
     gdk_window_get_device_position(
         gdkWindow, gdk_drag_context_get_device(aContext), &x, &y, nullptr);
-    gint scale = gdk_window_get_scale_factor(gdkWindow);
-    SetDragEndPoint(x * scale, y * scale);
-    LOGDRAGSERVICE("  guess drag end point %d %d\n", x * scale, y * scale);
+    // The position is in GDK's logical pixels. The window's own scale turns
+    // it into device pixels; the GDK scale factor is that scale rounded up,
+    // which is too large with fractional scaling on Wayland.
+    LayoutDeviceIntPoint point =
+        mSourceWindow ? mSourceWindow->GdkPointToDevicePixels(GdkPoint{x, y})
+                      : LayoutDeviceIntPoint(
+                            x * gdk_window_get_scale_factor(gdkWindow),
+                            y * gdk_window_get_scale_factor(gdkWindow));
+    SetDragEndPoint(point.x, point.y);
+    LOGDRAGSERVICE("  guess drag end point %d %d\n", (int)point.x,
+                   (int)point.y);
   }
 
   // Either the drag was aborted or the drop occurred outside the app.

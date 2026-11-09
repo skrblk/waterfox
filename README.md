@@ -107,6 +107,10 @@ changes as a patch series.
   from a vertical tab strip on the end side. The tab strip now decides
   from what the window saw of the drag: where the pointer last was, and
   whether it had left the window.
+- **The end of a drag without a drop is reported at the window's scale.**
+  With fractional scaling on Wayland, `dragend` gave a position multiplied
+  by the rounded-up scale (4/3 too far out at 1.5) when nothing had accepted
+  the drop. It now uses the scale the window is drawn at.
 
 ## Building
 
