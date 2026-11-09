@@ -97,6 +97,16 @@ changes as a patch series.
   lower `cpu.weight`. `memory.low` only protects as much as the user's slices
   also protect (`MemoryLow=`), so without that only the CPU weights apply.
   Preferences: `dom.ipc.processPriorityManager.linuxCgroups.*`.
+- **A tab released where its drag began stays in its window.** A tab drag
+  that no target accepted moves the tab, with its tree, to a new window
+  unless it ended close to the tab strip. On Wayland a drag released before
+  the pointer moved on ends that way, and the position reported for the end
+  of such a drag is unreliable: it is the last one inside the window even
+  after the pointer went outside, and with fractional scaling it was
+  multiplied by the rounded-up scale, which placed every such release far
+  from a vertical tab strip on the end side. The tab strip now decides
+  from what the window saw of the drag: where the pointer last was, and
+  whether it had left the window.
 
 ## Building
 

@@ -558,6 +558,9 @@ tags = "vertical-tabs"
 ["browser_tab_drag_drop_perwindow.js"]
 tags = "vertical-tabs"
 
+["browser_tab_drag_end_without_drop.js"]
+tags = "vertical-tabs"
+
 ["browser_tab_dragdrop.js"]
 skip-if = [
   "true", # Bug 1312436, Bug 1388973

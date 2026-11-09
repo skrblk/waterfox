@@ -47,6 +47,9 @@
   window.TabDragAndDrop = class {
     #dragTime = 0;
     #pinnedDropIndicatorTimeout = null;
+    // What this window has seen of the tab drag that started in it: where the
+    // pointer last was, and whether the drag has left the window.
+    #tabDragSeen = null;
 
     constructor(tabbrowserTabs) {
       this._tabbrowserTabs = tabbrowserTabs;
@@ -772,6 +775,7 @@
     handle_dragend(event) {
       var dt = event.dataTransfer;
       var draggedTab = dt.mozGetDataAt(TAB_DROP_TYPE, 0);
+      let dragSeen = this.#stopWatchingTabDrag();
 
       // Prevent this code from running if a tabdrop animation is
       // running since calling finishAnimateTabMove would clear
@@ -798,21 +802,41 @@
         return;
       }
 
+      // A drag that ends without a drop reports a position the widget code
+      // had to work out afterwards. On Wayland that is the last place the
+      // pointer had inside the window, also after it went outside, and with
+      // fractional scaling it is multiplied by the rounded-up scale. What this
+      // window saw of the drag is exact, so that decides where the drag ended.
+      let endedInWindow = true;
+      let endScreenX = event.screenX;
+      let endScreenY = event.screenY;
+      if (dragSeen) {
+        endedInWindow = !dragSeen.left;
+        if (endedInWindow) {
+          endScreenX = dragSeen.screenX;
+          endScreenY = dragSeen.screenY;
+        }
+      }
+
       // Disable detach within the browser toolbox
       let [tabAxisPos, tabAxisStart, tabAxisEnd] = this._tabbrowserTabs
         .verticalMode
-        ? [event.screenY, window.screenY, window.screenY + window.outerHeight]
-        : [event.screenX, window.screenX, window.screenX + window.outerWidth];
+        ? [endScreenY, window.screenY, window.screenY + window.outerHeight]
+        : [endScreenX, window.screenX, window.screenX + window.outerWidth];
 
-      if (tabAxisPos > tabAxisStart && tabAxisPos < tabAxisEnd) {
+      if (
+        endedInWindow &&
+        tabAxisPos > tabAxisStart &&
+        tabAxisPos < tabAxisEnd
+      ) {
         // also avoid detaching if the tab was dropped too close to
         // the tabbar (half a tab)
         let rect = window.windowUtils.getBoundsWithoutFlushing(
           this._tabbrowserTabs.arrowScrollbox
         );
         let crossAxisPos = this._tabbrowserTabs.verticalMode
-          ? event.screenX
-          : event.screenY;
+          ? endScreenX
+          : endScreenY;
         let crossAxisStart, crossAxisEnd;
         if (this._tabbrowserTabs.verticalMode) {
           if (
@@ -877,7 +901,7 @@
       // than our scale.
       var left = Math.min(
         Math.max(
-          event.screenX * ourCssToDesktopScale -
+          endScreenX * ourCssToDesktopScale -
             draggedTab._dragData.offsetX * screenCssToDesktopScale,
           availX
         ),
@@ -885,7 +909,7 @@
       );
       var top = Math.min(
         Math.max(
-          event.screenY * ourCssToDesktopScale -
+          endScreenY * ourCssToDesktopScale -
             draggedTab._dragData.offsetY * screenCssToDesktopScale,
           availY
         ),
@@ -945,6 +969,47 @@
 
     get _rtlMode() {
       return !this._tabbrowserTabs.verticalMode && RTL_UI;
+    }
+
+    /**
+     * Follows a tab drag for as long as it lasts, so that the end of a drag
+     * no target accepted can be placed without the position dragend reports.
+     *
+     * @param {DragEvent} event The event that starts the drag.
+     */
+    #watchTabDrag(event) {
+      this.#stopWatchingTabDrag();
+      let seen = {
+        screenX: event.screenX,
+        screenY: event.screenY,
+        left: false,
+        handleEvent(e) {
+          if (e.type == "dragleave") {
+            // Moving between two elements of this window is a leave as well,
+            // but the dragover that follows it takes the mark back.
+            this.left = true;
+          } else {
+            this.screenX = e.screenX;
+            this.screenY = e.screenY;
+            this.left = false;
+          }
+        },
+      };
+      for (let type of ["dragenter", "dragover", "dragleave"]) {
+        window.addEventListener(type, seen, true);
+      }
+      this.#tabDragSeen = seen;
+    }
+
+    #stopWatchingTabDrag() {
+      let seen = this.#tabDragSeen;
+      this.#tabDragSeen = null;
+      if (seen) {
+        for (let type of ["dragenter", "dragover", "dragleave"]) {
+          window.removeEventListener(type, seen, true);
+        }
+      }
+      return seen;
     }
 
     #setMovingTabMode(movingTab) {
@@ -1371,6 +1436,8 @@
         // and animation in `_animateTabMove`
         tab._dragData.movingTabs.reverse();
       }
+
+      this.#watchTabDrag(event);
 
       if (isMovingInTabStrip) {
         this.#setMovingTabMode(true);
